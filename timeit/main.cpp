@@ -125,10 +125,11 @@ const char* const helpText = "timeit runs the specified program with the specifi
 							 "       timeit <--help || --h>            -->            shows help text\n" \
 							 "\n" \
 							 "arguments:\n" \
-								"\t--expand-args                 -->                  expand arguments that contain spaces into multiple arguments (default behaviour is to leave them as single arguments)\n" \
+								"\t--expand-args                 -->                  expand elements of <arguments>... that contain spaces into multiple arguments (default behaviour is to leave them as single arguments)\n" \
 								"\t--error-color <auto|on|off>   -->                  force a specific coloring behaviour for error messages (which are always printed to stderr) (default behaviour is auto)\n" \
 								"\t--unit <(see above)>          -->                  the unit to output the elapsed time in (default is seconds)\n" \
 								"\t--accuracy <double|int>       -->                  specify whether elapsed time is outputted as a decimal (double) or as a round number (int) (default is double)\n"
+	// TODO: You still need to explain the last two cmdline args in the arguments section.
 							 "\n" \
 							 "NOTE: It is possible to specify a flag more than once. If this is the case, only the last occurrence will influence program behaviour.\n";
 
@@ -217,8 +218,8 @@ unsigned int parseFlags(int argc, const char* const * argv) {																// 
 						color::release();
 						exit(EXIT_SUCCESS);
 					}
-					if (!strcmp(argv[i], "double")) { flags::timeAccuracy = false; }				// NOTE: This might seem unnecessary, but we need it in case the --accuracy flag is used twice and has already changed the value.
-					if (!strcmp(argv[i], "int")) { flags::timeAccuracy = true; }
+					if (!strcmp(argv[i], "double")) { flags::timeAccuracy = false; continue; }				// NOTE: This might seem unnecessary, but we need it in case the --accuracy flag is used twice and has already changed the value.
+					if (!strcmp(argv[i], "int")) { flags::timeAccuracy = true; continue; }
 					color::initErrorColoring();
 					std::cout << color::red << format::error << "invalid value for --accuracy flag\n" << color::reset;
 					color::release();
@@ -290,34 +291,54 @@ void CreatePipes() {
 	}
 }
 
-std::chrono::nanoseconds RunChildProcess(int argc, const char* const * argv) {
+std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
+	if (argv[0][0] == '\0') {				// NOTE: I thought this was impossible, but apparently it isn't, so we have to check for it and report an error if it occurs.
+											// NOTE: The reason we don't just let CreateProcessA detect this error is because it will probably just filter out the nothingness and use the first argument as the program name, which is very terrible.
+		color::initErrorColoring();
+		std::cerr << color::red << "ERROR: target program name cannot be empty\n" << color::reset;
+		color::release();
+		exit(EXIT_SUCCESS);
+	}
+
+	std::string buffer;
+	buffer += '\"';									// IMPORTANT NOTE: These are super necessary because you wouldn't otherwise be able to run programs that have names with spaces in them. Even worse, you could accidentally run a completely different program than the one you wanted, which is terrible behaviour. That is why we add the quotes, to prevent against those two things.
+	buffer += argv[0];
+	buffer += '\" ';
+	if (flags::expandArgs) {						// NOTE: The difference in behviour here is achieved by adding quotes around the arguments. When quotes are present, arguments with spaces are still considered as one argument. Without quotes, the given arguments will be split up into many arguments when CreateProcessA creates the child process.
+		for (int i = 1; i < argc; i++) {
+			buffer += argv[i];
+			buffer += ' ';
+		}
+	}
+	else {
+		for (int i = 0; i < argc; i++) {
+			buffer += '\"';
+			buffer += argv[i];
+			buffer += '\" ';
+		}
+	}
+
+	std::cerr << buffer << '\n';					// TODO: Temp code, remove this later.
+
 	PROCESS_INFORMATION procInfo = { };
 
 	STARTUPINFOA startupInfo = { };
 	startupInfo.cb = sizeof(STARTUPINFOA);
 	startupInfo.hStdOutput = childOutputHandle;
-	startupInfo.hStdInput = childInputHandle;
+	startupInfo.hStdInput = childInputHandle;				// TODO: Make sure that the program name thing can't be put in the first argument of the below function. Maybe I was just doing it wrong before? Does it still discover the program in the same way?
 	startupInfo.hStdError = childErrorHandle;
 	startupInfo.dwFlags = STARTF_USESTDHANDLES;
 
 	std::chrono::high_resolution_clock::time_point startTime = std::chrono::high_resolution_clock::now();
 
-	std::string buffer;
-	buffer += '\"';
-	buffer += argv[0];			// TODO: Implement splitting in both places here.
-	buffer += '\" ';
-	for (int i = 1; i < argc; i++) {
-		buffer += argv[i];
-		buffer += ' ';
-	}
-
-	std::cerr << buffer << '\n';
-
-	// TODO: Find out what exactly CreateProcessA can change about the buffer string and make sure you don't cause memory leaks or anything.
-	if (!CreateProcessA(nullptr, buffer, nullptr, nullptr, true, 0, nullptr, nullptr, &startupInfo, &procInfo)) {
+	char* innerBuffer = buffer.data();						// NOTE: We have to use data() here instead of c_str() because it's undefined behaviour otherwise. The deal with data() is that you're allowed to change everything except the NUL termination character at the end of c-style string that is returned.
+	// NOTE: The way it is now, CreateProcessA can change most of the contents, and if it changes the pointer to point to something else, we don't care because the pointer is just a copy. This means that we are as safe as we can be. The only danger comes from the possible modification of the NUL character, which CreateProcessA probably won't do because why should it.
+	// NOTE: I should also point out that the docs say that CreateProcessW is the one that changes the string, not CreateProcessA, so we should be safe. The only reason I'm taking these precautions is because the parameter isn't marked with const and I don't totally trust the docs.
+	if (!CreateProcessA(nullptr, innerBuffer, nullptr, nullptr, true, 0, nullptr, nullptr, &startupInfo, &procInfo)) {
 		std::cerr << "had some trouble starting child process\n";
 		std::cerr << strerror(GetLastError()) << '\n';
 		exit(EXIT_FAILURE);
+		// TODO: Be more specific here and branch over what the error actually is. If it's user-made you should exit with success and if it's a system issue you should exit with failure.
 	}
 
 	WaitForSingleObject(procInfo.hProcess, INFINITE);				// TODO: Handle error here.
@@ -325,14 +346,14 @@ std::chrono::nanoseconds RunChildProcess(int argc, const char* const * argv) {
 	GetExitCodeProcess(procInfo.hProcess, &exitCode);
 	std::cerr << exitCode << '\n';
 
-	return std::chrono::high_resolution_clock::now() - startTime;
-
 	CloseHandle(procInfo.hProcess);						// TODO: Handle errors here too.
 	CloseHandle(procInfo.hThread);
 
-	CloseHandle(childOutputHandle);
+	CloseHandle(childOutputHandle);				// TODO: See if you can cause the other thread to somehow read an EOF instead of breaking the pipe. It has more to do with the code of the other thread than the code of this thread.
 	CloseHandle(childInputHandle);
 	CloseHandle(childErrorHandle);
+
+	return std::chrono::high_resolution_clock::now() - startTime;
 
 	char buffer2[128];
 	sprintf(buffer2, "%f", duration.count());
