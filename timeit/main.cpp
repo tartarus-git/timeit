@@ -12,103 +12,6 @@
 
 #include <string>
 
-
-
-char childOutputBuffer[1024];
-OVERLAPPED readOutputEvent = { };
-void readChildOutput() {
-		if (!ReadFile(parentOutputReadHandle, childOutputBuffer, sizeof(childOutputBuffer), nullptr, &readOutputEvent)) {
-			std::cerr << "ReadFile from parentOutputReadHandle failed\n";
-			std::cerr << strerror(GetLastError()) << '\n';
-			exit(EXIT_FAILURE);
-		}
-}
-
-char childErrorBuffer[1024];
-OVERLAPPED readErrorEvent = { };
-void readChildError() {
-		if (!ReadFile(parentErrorReadHandle, childErrorBuffer, sizeof(childErrorBuffer), nullptr, &readErrorEvent)) {
-			std::cerr << "ReadFile from parentErrorReadHandle failed\n";
-			std::cerr << strerror(GetLastError()) << '\n';
-			exit(EXIT_FAILURE);
-		}
-}
-
-char parentInputBuffer[1024];
-OVERLAPPED readInputEvent = { };
-void readParentInput() {
-		if (!ReadFile(GetStdHandle(STD_INPUT_HANDLE), parentInputBuffer, sizeof(parentInputBuffer), nullptr, &readInputEvent)) {
-			std::cerr << "ReadFile from parent stdin failed\n";
-			std::cerr << strerror(GetLastError()) << '\n';
-			exit(EXIT_FAILURE);
-		}
-}
-
-void managePipes() {
-	//readChildOutput();
-	//readChildError();
-	//readParentInput();
-
-	while (true) {
-		unsigned long bytesAvailable;
-		if (!PeekNamedPipe(parentOutputReadHandle, nullptr, 0, nullptr, &bytesAvailable, nullptr)) {
-			if (GetLastError() == ERROR_BROKEN_PIPE) {
-				return;
-			}
-			std::cerr << "failed while polling child output pipe\n";
-			std::cerr << strerror(GetLastError()) << '\n';
-			exit(EXIT_FAILURE);
-		}
-		if (bytesAvailable != 0) {
-			unsigned long bytesRead;
-			if (!ReadFile(parentOutputReadHandle, childOutputBuffer, sizeof(childOutputBuffer), &bytesRead, nullptr)) {
-				std::cerr << "ReadFile from parentOutputReadHandle failed\n";
-				std::cerr << strerror(GetLastError()) << '\n';
-				exit(EXIT_FAILURE);
-			}
-			std::cout.write(childOutputBuffer, bytesRead);
-		}
-/*
-		if (HasOverlappedIoCompleted(&readOutputEvent)) {
-			unsigned long bytesRead;
-			if (!GetOverlappedResult(parentOutputReadHandle, &readOutputEvent, &bytesRead, true)) {
-				if (GetLastError() == ERROR_HANDLE_EOF) {  }
-				else { std::cerr << "GetOverlappedResult failed with parentOutputReadHandle\n"; exit(EXIT_FAILURE); }
-			} else {
-				std::cout.write(childOutputBuffer, bytesRead);
-				readChildOutput();
-			}
-		}
-		if (HasOverlappedIoCompleted(&readErrorEvent)) {
-			unsigned long bytesRead;
-			if (!GetOverlappedResult(parentErrorReadHandle, &readErrorEvent, &bytesRead, true)) {
-				if (GetLastError() == ERROR_HANDLE_EOF) { }
-				else { std::cerr << "GetOverlappedResult failed with parentErrorReadHandle\n"; exit(EXIT_FAILURE); }
-			} else {
-				std::cerr.write(childErrorBuffer, bytesRead);
-				readChildError();
-			}
-		}
-		if (HasOverlappedIoCompleted(&readInputEvent)) {
-			unsigned long bytesRead;
-			if (!GetOverlappedResult(GetStdHandle(STD_INPUT_HANDLE), &readInputEvent, &bytesRead, true)) {
-				if (GetLastError() == ERROR_HANDLE_EOF) {
-					CloseHandle(parentInputWriteHandle); return;
-				} else { std::cerr << "GetOverlappedResult failed with parent stdin\n"; exit(EXIT_FAILURE); }
-			}
-			else {
-				unsigned long tempbytesRead = bytesRead;
-				if (!WriteFile(parentInputWriteHandle, parentInputBuffer, tempbytesRead, &bytesRead, nullptr)) {
-					std::cerr << "failed to write to child process input\n";
-					exit(EXIT_FAILURE);
-				}
-				readParentInput();
-			}
-		}
-		*/
-	}
-}
-
 #define STDIN_FILENO 0
 #define STDOUT_FILENO 1
 #define STDERR_FILENO 2
@@ -291,6 +194,68 @@ void CreatePipes() {
 	}
 }
 
+void managePipes() {
+	while (true) {
+		unsigned long bytesAvailable;
+		if (!PeekNamedPipe(parentOutputReadHandle, nullptr, 0, nullptr, &bytesAvailable, nullptr)) {
+			if (GetLastError() == ERROR_BROKEN_PIPE) {
+				return;
+			}
+			std::cerr << "failed while polling child output pipe\n";
+			std::cerr << strerror(GetLastError()) << '\n';
+			exit(EXIT_FAILURE);
+		}
+		if (bytesAvailable != 0) {
+			unsigned long bytesRead;
+			if (!ReadFile(parentOutputReadHandle, childOutputBuffer, sizeof(childOutputBuffer), &bytesRead, nullptr)) {
+				std::cerr << "ReadFile from parentOutputReadHandle failed\n";
+				std::cerr << strerror(GetLastError()) << '\n';
+				exit(EXIT_FAILURE);
+			}
+			std::cout.write(childOutputBuffer, bytesRead);
+		}
+
+		if (HasOverlappedIoCompleted(&readOutputEvent)) {
+			unsigned long bytesRead;
+			if (!GetOverlappedResult(parentOutputReadHandle, &readOutputEvent, &bytesRead, true)) {
+				if (GetLastError() == ERROR_HANDLE_EOF) {  }
+				else { std::cerr << "GetOverlappedResult failed with parentOutputReadHandle\n"; exit(EXIT_FAILURE); }
+			} else {
+				std::cout.write(childOutputBuffer, bytesRead);
+				readChildOutput();
+			}
+		}
+		if (HasOverlappedIoCompleted(&readErrorEvent)) {
+			unsigned long bytesRead;
+			if (!GetOverlappedResult(parentErrorReadHandle, &readErrorEvent, &bytesRead, true)) {
+				if (GetLastError() == ERROR_HANDLE_EOF) { }
+				else { std::cerr << "GetOverlappedResult failed with parentErrorReadHandle\n"; exit(EXIT_FAILURE); }
+			} else {
+				std::cerr.write(childErrorBuffer, bytesRead);
+				readChildError();
+			}
+		}
+		if (HasOverlappedIoCompleted(&readInputEvent)) {
+			unsigned long bytesRead;
+			if (!GetOverlappedResult(GetStdHandle(STD_INPUT_HANDLE), &readInputEvent, &bytesRead, true)) {
+				if (GetLastError() == ERROR_HANDLE_EOF) {
+					CloseHandle(parentInputWriteHandle); return;
+				} else { std::cerr << "GetOverlappedResult failed with parent stdin\n"; exit(EXIT_FAILURE); }
+			}
+			else {
+				unsigned long tempbytesRead = bytesRead;
+				if (!WriteFile(parentInputWriteHandle, parentInputBuffer, tempbytesRead, &bytesRead, nullptr)) {
+					std::cerr << "failed to write to child process input\n";
+					exit(EXIT_FAILURE);
+				}
+				readParentInput();
+			}
+		}
+
+		// TODO: You're gonna have to put some sort of sleep thing in here so you don't take up 100% of a core with this thread. Or maybe just use 100% of the core, idk.
+	}
+}
+
 std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 	if (argv[0][0] == '\0') {				// NOTE: I thought this was impossible, but apparently it isn't, so we have to check for it and report an error if it occurs.
 											// NOTE: The reason we don't just let CreateProcessA detect this error is because it will probably just filter out the nothingness and use the first argument as the program name, which is very terrible.
@@ -334,6 +299,9 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 	char* innerBuffer = buffer.data();						// NOTE: We have to use data() here instead of c_str() because it's undefined behaviour otherwise. The deal with data() is that you're allowed to change everything except the NUL termination character at the end of c-style string that is returned.
 	// NOTE: The way it is now, CreateProcessA can change most of the contents, and if it changes the pointer to point to something else, we don't care because the pointer is just a copy. This means that we are as safe as we can be. The only danger comes from the possible modification of the NUL character, which CreateProcessA probably won't do because why should it.
 	// NOTE: I should also point out that the docs say that CreateProcessW is the one that changes the string, not CreateProcessA, so we should be safe. The only reason I'm taking these precautions is because the parameter isn't marked with const and I don't totally trust the docs.
+
+	std::thread pipeManagerThread(managePipes);
+
 	if (!CreateProcessA(nullptr, innerBuffer, nullptr, nullptr, true, 0, nullptr, nullptr, &startupInfo, &procInfo)) {
 		std::cerr << "had some trouble starting child process\n";
 		std::cerr << strerror(GetLastError()) << '\n';
@@ -342,6 +310,7 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 	}
 
 	WaitForSingleObject(procInfo.hProcess, INFINITE);				// TODO: Handle error here.
+	pipeManagerThread.join();
 	unsigned long exitCode;
 	GetExitCodeProcess(procInfo.hProcess, &exitCode);
 	std::cerr << exitCode << '\n';
@@ -354,18 +323,18 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 	CloseHandle(childErrorHandle);
 
 	return std::chrono::high_resolution_clock::now() - startTime;
-
-	char buffer2[128];
-	sprintf(buffer2, "%f", duration.count());
-	return std::string(buffer2);
 }
 
-std::string intToString(uint64_t value) {
-	return std::string("hi");
+char* intToString(uint64_t value) {
+	char* result = new char[20];
+	_ui64toa(value, result, 10);					// TODO: This is temporary, you should make your own algorithm for doing this. These can get sort of complicated if you tune them to your hardware, but it's a good excersize, you should do it.
+	return result;
 }
 
-std::string doubleToString(double value) {
-
+char* doubleToString(double value) {
+	char* result = new char[128];
+	sprintf(result, "%f", value);
+	return result;
 }
 
 void manageArgs(int argc, const char* const * argv) {
@@ -374,14 +343,14 @@ void manageArgs(int argc, const char* const * argv) {
 	switch (targetProgramArgCount) {
 	case 0:
 		color::initErrorColoring();
-		std::cout << color::red << format::error << "too few arguments\n" << color::reset;
+		std::cout << color::red << "ERROR: too few arguments\n" << color::reset;
 		color::release();
 		exit(EXIT_SUCCESS);
 	default:
 		isErrorColored = forcedErrorColoring;																		// If everything went great with parsing the cmdline args, finally set output coloring to what the user wants it to be. It is necessary to do this here because of the garantee that we wrote above.
 		CreatePipes();
-		std::chrono::nanoseconds elapsedTime = RunChildProcess(targetProgramArgCount, argv + targetProgramIndex);
-		std::string elapsedTimeString;
+		std::chrono::nanoseconds elapsedTime = runChildProcess(targetProgramArgCount, argv + targetProgramIndex);
+		char* elapsedTimeString;
 		switch (flags::timeUnit) {
 		case 0:
 			if (flags::timeAccuracy) { elapsedTimeString = intToString(std::chrono::duration_cast<std::chrono::duration<uint64_t, std::nano>>(elapsedTime).count()); break; }
@@ -403,6 +372,7 @@ void manageArgs(int argc, const char* const * argv) {
 			elapsedTimeString = doubleToString(std::chrono::duration_cast<std::chrono::duration<double, std::ratio<3600, 1>>>(elapsedTime).count()); break;
 		}
 		std::cerr << elapsedTimeString << '\n';
+		delete[] elapsedTimeString;
 	}
 }
 
@@ -431,7 +401,5 @@ int main(int argc, char* const * argv) {
 
 	return 0;
 
-	std::thread pipeManagerThread(managePipes);
 	std::string duration = RunChildProcess(argv[1], argv[2]);
-	pipeManagerThread.join();
 }
