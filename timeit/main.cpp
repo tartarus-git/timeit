@@ -82,7 +82,7 @@ unsigned int parseFlags(int argc, const char* const * argv) {																// 
 					i++;					// TODO: Change all the std::couts to std::cerrs.
 					if (i == argc) {
 						color::initErrorColoring();
-						std::cout << color::red << format::error << "the --error-color flag was not supplied with a value\n" << color::reset;
+						std::cout << color::red << "ERROR: the --error-color flag was not supplied with a value\n" << color::reset;
 						color::release();
 						exit(EXIT_SUCCESS);
 					}
@@ -90,7 +90,7 @@ unsigned int parseFlags(int argc, const char* const * argv) {																// 
 					if (!strcmp(argv[i], "off")) { forcedErrorColoring = false; continue; }
 					if (!strcmp(argv[i], "auto")) { forcedErrorColoring = isErrorColored; continue; }
 					color::initErrorColoring();
-					std::cout << color::red << format::error << "invalid value for --error-color flag\n" << color::reset;
+					std::cout << color::red << "ERROR: invalid value for --error-color flag\n" << color::reset;
 					color::release();
 					exit(EXIT_SUCCESS);
 				}
@@ -98,7 +98,7 @@ unsigned int parseFlags(int argc, const char* const * argv) {																// 
 					i++;
 					if (i == argc) {
 						color::initErrorColoring();
-						std::cout << color::red << format::error << "the --unit flag was not supplied with a value\n" << color::reset;
+						std::cout << color::red << "ERROR: the --unit flag was not supplied with a value\n" << color::reset;
 						color::release();
 						exit(EXIT_SUCCESS);
 					}
@@ -109,7 +109,7 @@ unsigned int parseFlags(int argc, const char* const * argv) {																// 
 					if (!strcmp(argv[i], "minutes")) { flags::timeUnit = 4; continue; }
 					if (!strcmp(argv[i], "hours")) { flags::timeUnit = 5; continue; }
 					color::initErrorColoring();
-					std::cout << color::red << format::error << "invalid value for --unit flag\n" << color::reset;
+					std::cout << color::red << "ERROR: invalid value for --unit flag\n" << color::reset;
 					color::release();
 					exit(EXIT_SUCCESS);
 				}
@@ -117,26 +117,26 @@ unsigned int parseFlags(int argc, const char* const * argv) {																// 
 					i++;
 					if (i == argc) {
 						color::initErrorColoring();
-						std::cerr << color::red << format::error << "the --accuracy flag was not supplied with a value\n" << color::reset;
+						std::cerr << color::red << "ERROR: the --accuracy flag was not supplied with a value\n" << color::reset;
 						color::release();
 						exit(EXIT_SUCCESS);
 					}
 					if (!strcmp(argv[i], "double")) { flags::timeAccuracy = false; continue; }				// NOTE: This might seem unnecessary, but we need it in case the --accuracy flag is used twice and has already changed the value.
 					if (!strcmp(argv[i], "int")) { flags::timeAccuracy = true; continue; }
 					color::initErrorColoring();
-					std::cout << color::red << format::error << "invalid value for --accuracy flag\n" << color::reset;
+					std::cout << color::red << "ERROR: invalid value for --accuracy flag\n" << color::reset;
 					color::release();
 					exit(EXIT_SUCCESS);
 				}
 				if (!strcmp(flagTextStart, "help")) { showHelp(); exit(EXIT_SUCCESS); }
 				if (!strcmp(flagTextStart, "h")) { showHelp(); exit(EXIT_SUCCESS); }
 				color::initErrorColoring();
-				std::cout << color::red << format::error << "one or more flag arguments are invalid\n" << color::reset;
+				std::cout << color::red << "ERROR: one or more flag arguments are invalid\n" << color::reset;
 				color::release();
 				exit(EXIT_SUCCESS);
 			}
 			color::initErrorColoring();
-			std::cout << color::red << format::error << "one or more flag arguments are invalid\n" << color::reset;
+			std::cout << color::red << "ERROR: one or more flag arguments are invalid\n" << color::reset;
 			color::release();
 			exit(EXIT_SUCCESS);
 		}
@@ -207,14 +207,15 @@ void managePipes() {
 		}
 		if (bytesAvailable != 0) {
 			unsigned long bytesRead;
-			if (!ReadFile(parentOutputReadHandle, childOutputBuffer, sizeof(childOutputBuffer), &bytesRead, nullptr)) {
+			char buffer[1024];						// TODO: Obviously, you should replace this scuffed buffering system with a proper reading class that dynamically scales it's buffer to minimize syscalls. That'll keep up with whatever buffer size the system will use for the pipe inner-structure.
+			if (!ReadFile(parentOutputReadHandle, buffer, sizeof(buffer), &bytesRead, nullptr)) {
 				std::cerr << "ReadFile from parentOutputReadHandle failed\n";
 				std::cerr << strerror(GetLastError()) << '\n';
 				exit(EXIT_FAILURE);
 			}
-			std::cout.write(childOutputBuffer, bytesRead);
+			std::cout.write(buffer, bytesRead);					// TODO: To reiterate: Don't use buffered output, the output is already being buffered by the pipe, it doesn't do you any good, just makes the whole ordeal slower.
 		}
-
+/*
 		if (HasOverlappedIoCompleted(&readOutputEvent)) {
 			unsigned long bytesRead;
 			if (!GetOverlappedResult(parentOutputReadHandle, &readOutputEvent, &bytesRead, true)) {
@@ -250,7 +251,7 @@ void managePipes() {
 				}
 				readParentInput();
 			}
-		}
+		}*/
 
 		// TODO: You're gonna have to put some sort of sleep thing in here so you don't take up 100% of a core with this thread. Or maybe just use 100% of the core, idk.
 	}
@@ -268,7 +269,7 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 	std::string buffer;
 	buffer += '\"';									// IMPORTANT NOTE: These are super necessary because you wouldn't otherwise be able to run programs that have names with spaces in them. Even worse, you could accidentally run a completely different program than the one you wanted, which is terrible behaviour. That is why we add the quotes, to prevent against those two things.
 	buffer += argv[0];
-	buffer += '\" ';
+	buffer += "\" ";
 	if (flags::expandArgs) {						// NOTE: The difference in behviour here is achieved by adding quotes around the arguments. When quotes are present, arguments with spaces are still considered as one argument. Without quotes, the given arguments will be split up into many arguments when CreateProcessA creates the child process.
 		for (int i = 1; i < argc; i++) {
 			buffer += argv[i];
@@ -279,7 +280,7 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 		for (int i = 0; i < argc; i++) {
 			buffer += '\"';
 			buffer += argv[i];
-			buffer += '\" ';
+			buffer += "\" ";
 		}
 	}
 
@@ -400,6 +401,4 @@ int main(int argc, char* const * argv) {
 	CloseHandle(parentErrorReadHandle);
 
 	return 0;
-
-	std::string duration = RunChildProcess(argv[1], argv[2]);
 }
