@@ -1,18 +1,21 @@
-#define _CRT_SECURE_NO_WARNINGS				// TODO: Make sure the places in the code that are affected by this aren't better off without it. Your number to string conversion might overflow if your not careful with your bounds. How big should the bounds be to fit all floats?
+#define BUFFERED_HANDLE_READER_BUFFER_START_SIZE 2048			// TODO: Make this number the correct one, look at grep or something, somewhere I have the right number here.
+#define BUFFERED_HANDLE_READER_BUFFER_STEP_SIZE 2048			// TODO: Same for this one.
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 
-#include <io.h>
+#include <stdlib.h>
+#include <malloc.h>
 
 #include <thread>
 #include <chrono>
 
 #include <iostream>
+#include <io.h>
 
 #include <string>
 
-#define STDIN_FILENO 0
+//#define STDIN_FILENO 0
 #define STDOUT_FILENO 1
 #define STDERR_FILENO 2
 
@@ -31,8 +34,9 @@ const char* const helpText = "timeit runs the specified program with the specifi
 								"\t--expand-args                 -->                  expand elements of <arguments>... that contain spaces into multiple arguments (default behaviour is to leave them as single arguments)\n" \
 								"\t--error-color <auto|on|off>   -->                  force a specific coloring behaviour for error messages (which are always printed to stderr) (default behaviour is auto)\n" \
 								"\t--unit <(see above)>          -->                  the unit to output the elapsed time in (default is seconds)\n" \
-								"\t--accuracy <double|int>       -->                  specify whether elapsed time is outputted as a decimal (double) or as a round number (int) (default is double)\n"
-	// TODO: You still need to explain the last two cmdline args in the arguments section.
+								"\t--accuracy <double|int>       -->                  specify whether elapsed time is outputted as a decimal (double) or as a round number (int) (default is double)\n" \
+								"\t<program>                     -->                  the program which is to be timed\n" \
+								"\t<arguments>...                -->                  the arguments to pass to the target program\n" \
 							 "\n" \
 							 "NOTE: It is possible to specify a flag more than once. If this is the case, only the last occurrence will influence program behaviour.\n";
 
@@ -41,7 +45,7 @@ bool isErrorColored;
 
 // Coloring
 namespace color {
-	char* red = nullptr;										// NOTE: The nullptr is needed so that error reporting subroutines know if they need to allocate colors or if it has been done for them already.
+	char* red;			// TODO: Make sure nothing relied on the previous nullptr tactic that carried over from grep.
 	void unsafeInitRed() { red = new char[ANSI_ESC_CODE_MIN_SIZE + 2 + 1]; memcpy(red, ANSI_ESC_CODE_PREFIX "31" ANSI_ESC_CODE_SUFFIX, ANSI_ESC_CODE_MIN_SIZE + 2 + 1); }
 	void unsafeInitPipedRed() { red = new char; *red = '\0'; }
 
@@ -62,7 +66,8 @@ namespace flags {
 	bool timeAccuracy = false;
 }
 
-void showHelp() { std::cout << helpText; }				// NOTE: I have previously only shown help when output is connected to TTY, so as not to pollute stdout when piping. Back then, help was shown sometimes when it wasn't requested, which made it prudent to include that feature. Now, you have to explicitly ask for help, making this TTY branching unnecessary.
+// NOTE: I have previously only shown help when output is connected to TTY, so as not to pollute stdout when piping. Back then, help was shown sometimes when it wasn't requested, which made it prudent to include that feature. Now, you have to explicitly ask for help, making TTY branching unnecessary.
+void showHelp() { std::cout << helpText; }
 
 bool forcedErrorColoring;					// NOTE: GARANTEE: If something goes wrong while parsing the cmdline args and an error message is necessary, the error message will always be printed with the default coloring (based on TTY/piped mode).
 
@@ -74,15 +79,14 @@ unsigned int parseFlags(int argc, const char* const * argv) {																// 
 			if (arg[1] == '-') {
 				const char* flagTextStart = arg + 2;
 				if (*flagTextStart == '\0') { continue; }
-				if (!strcmp(flagTextStart, "expand-args")) {
-					flags::expandArgs = true;
-					continue;
-				}				// TODO: Make sure I don't have any std::cerrs without newline built into string lying around.
+
+				if (!strcmp(flagTextStart, "expand-args")) { flags::expandArgs = true; continue; }				// TODO: Make sure I don't have any std::cerrs without newline built into string lying around.
+
 				if (!strcmp(flagTextStart, "error-color")) {
 					i++;					// TODO: Change all the std::couts to std::cerrs.
 					if (i == argc) {
 						color::initErrorColoring();
-						std::cout << color::red << "ERROR: the --error-color flag was not supplied with a value\n" << color::reset;
+						std::cerr << color::red << "ERROR: the --error-color flag was not supplied with a value\n" << color::reset;
 						color::release();
 						exit(EXIT_SUCCESS);
 					}
@@ -90,15 +94,16 @@ unsigned int parseFlags(int argc, const char* const * argv) {																// 
 					if (!strcmp(argv[i], "off")) { forcedErrorColoring = false; continue; }
 					if (!strcmp(argv[i], "auto")) { forcedErrorColoring = isErrorColored; continue; }
 					color::initErrorColoring();
-					std::cout << color::red << "ERROR: invalid value for --error-color flag\n" << color::reset;
+					std::cerr << color::red << "ERROR: invalid value for --error-color flag\n" << color::reset;
 					color::release();
 					exit(EXIT_SUCCESS);
 				}
+
 				if (!strcmp(flagTextStart, "unit")) {
 					i++;
 					if (i == argc) {
 						color::initErrorColoring();
-						std::cout << color::red << "ERROR: the --unit flag was not supplied with a value\n" << color::reset;
+						std::cerr << color::red << "ERROR: the --unit flag was not supplied with a value\n" << color::reset;
 						color::release();
 						exit(EXIT_SUCCESS);
 					}
@@ -109,10 +114,11 @@ unsigned int parseFlags(int argc, const char* const * argv) {																// 
 					if (!strcmp(argv[i], "minutes")) { flags::timeUnit = 4; continue; }
 					if (!strcmp(argv[i], "hours")) { flags::timeUnit = 5; continue; }
 					color::initErrorColoring();
-					std::cout << color::red << "ERROR: invalid value for --unit flag\n" << color::reset;
+					std::cerr << color::red << "ERROR: invalid value for --unit flag\n" << color::reset;
 					color::release();
 					exit(EXIT_SUCCESS);
 				}
+
 				if (!strcmp(flagTextStart, "accuracy")) {
 					i++;
 					if (i == argc) {
@@ -124,19 +130,21 @@ unsigned int parseFlags(int argc, const char* const * argv) {																// 
 					if (!strcmp(argv[i], "double")) { flags::timeAccuracy = false; continue; }				// NOTE: This might seem unnecessary, but we need it in case the --accuracy flag is used twice and has already changed the value.
 					if (!strcmp(argv[i], "int")) { flags::timeAccuracy = true; continue; }
 					color::initErrorColoring();
-					std::cout << color::red << "ERROR: invalid value for --accuracy flag\n" << color::reset;
+					std::cerr << color::red << "ERROR: invalid value for --accuracy flag\n" << color::reset;
 					color::release();
 					exit(EXIT_SUCCESS);
 				}
+
 				if (!strcmp(flagTextStart, "help")) { showHelp(); exit(EXIT_SUCCESS); }
 				if (!strcmp(flagTextStart, "h")) { showHelp(); exit(EXIT_SUCCESS); }
-				color::initErrorColoring();
-				std::cout << color::red << "ERROR: one or more flag arguments are invalid\n" << color::reset;
-				color::release();
-				exit(EXIT_SUCCESS);
+
+				//color::initErrorColoring();								// NOTE: Not necessary because of fall-through.
+				//std::cerr << color::red << "ERROR: one or more flag arguments are invalid\n" << color::reset;
+				//color::release();
+				//exit(EXIT_SUCCESS);
 			}
 			color::initErrorColoring();
-			std::cout << color::red << "ERROR: one or more flag arguments are invalid\n" << color::reset;
+			std::cerr << color::red << "ERROR: one or more flag arguments are invalid\n" << color::reset;
 			color::release();
 			exit(EXIT_SUCCESS);
 		}
@@ -153,6 +161,17 @@ HANDLE parentOutputReadHandle;
 HANDLE parentInputWriteHandle;
 HANDLE parentErrorReadHandle;
 
+void releasePipes() {							// NOTE: No need to return whether or not we were successful because when we call this function, we don't actually ever care if we were successful or not.
+	CloseHandle(childOutputHandle);
+	CloseHandle(parentOutputReadHandle);
+
+	CloseHandle(childInputHandle);
+	CloseHandle(parentInputWriteHandle);
+	
+	CloseHandle(childErrorHandle);
+	CloseHandle(parentErrorReadHandle);
+}
+
 void CreatePipes() {
 	if (!CreatePipe(&parentOutputReadHandle, &childOutputHandle, nullptr, 0)) {
 		color::initErrorColoring();			// TODO: Make sure there are no extra punctuation in your error messages.
@@ -164,6 +183,8 @@ void CreatePipes() {
 		color::initErrorColoring();
 		std::cerr << color::red << "ERROR: failed to set child stdout handle to inheritable\n" << color::reset;
 		color::release();
+		CloseHandle(childOutputHandle);
+		CloseHandle(parentOutputReadHandle);
 		exit(EXIT_FAILURE);
 	}
 
@@ -171,12 +192,18 @@ void CreatePipes() {
 		color::initErrorColoring();
 		std::cerr << color::red << "ERROR: failed to create pipe from parent to child stdin\n" << color::reset;
 		color::release();
+		CloseHandle(childOutputHandle);
+		CloseHandle(parentOutputReadHandle);
 		exit(EXIT_FAILURE);
 	}
 	if (!SetHandleInformation(childInputHandle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
 		color::initErrorColoring();
 		std::cerr << color::red << "ERROR: failed to set child stdin handle to inheritable\n" << color::reset;
 		color::release();
+		CloseHandle(childOutputHandle);
+		CloseHandle(parentOutputReadHandle);
+		CloseHandle(childInputHandle);
+		CloseHandle(parentInputWriteHandle);
 		exit(EXIT_FAILURE);
 	}
 
@@ -184,37 +211,98 @@ void CreatePipes() {
 		color::initErrorColoring();
 		std::cerr << color::red << "ERROR: failed to create pipe from child stderr to parent\n" << color::reset;
 		color::release();
+		CloseHandle(childOutputHandle);
+		CloseHandle(parentOutputReadHandle);
+		CloseHandle(childInputHandle);
+		CloseHandle(parentInputWriteHandle);
 		exit(EXIT_FAILURE);
 	}
 	if (!SetHandleInformation(childErrorHandle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
 		color::initErrorColoring();
 		std::cerr << color::red << "ERROR: failed to set child stderr handle to inheritable\n" << color::reset;
 		color::release();
+		releasePipes();
 		exit(EXIT_FAILURE);
 	}
 }
 
+class BufferedHandleReader {
+public:
+	HANDLE handle;
+
+	char* buffer;
+	unsigned long bufferSize;
+
+	BufferedHandleReader(HANDLE handle) : handle(handle), bufferSize(BUFFERED_HANDLE_READER_BUFFER_START_SIZE) { buffer = new char[BUFFERED_HANDLE_READER_BUFFER_START_SIZE]; }
+
+	void increaseBufferSize() {
+		unsigned long newBufferSize = bufferSize + BUFFERED_HANDLE_READER_BUFFER_STEP_SIZE;
+		char* temp = (char*)realloc(buffer, newBufferSize);
+		if (temp) { buffer = temp; bufferSize = newBufferSize; }
+	}
+
+	unsigned long read() {
+		unsigned long bytesRead;
+		if (ReadFile(handle, buffer, bufferSize, &bytesRead, nullptr)) { if (bytesRead == bufferSize) { increaseBufferSize(); } return bytesRead; }
+		return 0;
+	}
+
+	void release() { delete[] buffer; buffer = nullptr; }					// NOTE: Just remember, delete[] and delete can't set the pointer to nullptr because you haven't passed it by reference. It would go against the language rules.
+	
+	~BufferedHandleReader() { if (buffer) { delete[] buffer; } }	// SIDE-NOTE FOR FUTURE REFERENCE: Every time, you google if new and delete can throw, and you keep forgetting every time. Just remember, they can both throw. EXCEPT if you use a special form of new, which you should remember to use from now on because it's useful.
+};
+
+PROCESS_INFORMATION procInfo;
+
 void managePipes() {
+	bool outputClosed = false;
+	bool inputClosed = false;
+	bool errorClosed = false;
+
+	unsigned long bytesAvailable;
+	
+	BufferedHandleReader outputReader(parentOutputReadHandle);
+	//BufferedHandleReader inputReader									// TODO: I don't see a way to do this in a non-blocking way. This is the same problem we had at the beginning of grep development. Just start a new thread and handle it in a blocking way on there. Don't worry about SIGINT stuff, that handles well because either EOF is sent or the syscall is cancelled, I'm not quite sure which one yet, you should test.
+	BufferedHandleReader errorReader(parentErrorReadHandle);
+
 	while (true) {
-		unsigned long bytesAvailable;
-		if (!PeekNamedPipe(parentOutputReadHandle, nullptr, 0, nullptr, &bytesAvailable, nullptr)) {
-			if (GetLastError() == ERROR_BROKEN_PIPE) {
-				return;
+		if (PeekNamedPipe(parentOutputReadHandle, nullptr, 0, nullptr, &bytesAvailable, nullptr)) {
+			if (bytesAvailable != 0) {
+				unsigned long bytesRead = outputReader.read();
+				if (bytesRead != 0) {
+					if (_write(STDOUT_FILENO, outputReader.buffer, bytesRead) == -1) {
+						color::initErrorColoring();
+						std::cerr << color::red << "ERROR: failed to write to parent stdout\n" << color::reset;
+						color::release();
+						outputReader.release();
+						//inputReader
+						errorReader.release();					// TODO: Make sure you release everything that you need to everywhere before you call exit.
+						releasePipes();
+						exit(EXIT_FAILURE);						// NOTE: exit doesn't call the destructors of your stack objects. It calls other things (including handlers registered with atexit and the destructors of static objects), but not the destructors of local stack objects. BE WARE!!!!
+					}
+				}
+				else {
+					color::initErrorColoring();
+					std::cerr << color::red << "ERROR: failed to read from child stdout\n" << color::reset;
+					color::release();
+					outputReader.release();
+					//inputReader
+					errorReader.release();
+					releasePipes();					// TODO: Replace these with break, just like the below code does.
+					exit(EXIT_FAILURE);
+				}
 			}
-			std::cerr << "failed while polling child output pipe\n";
-			std::cerr << strerror(GetLastError()) << '\n';
-			exit(EXIT_FAILURE);
 		}
-		if (bytesAvailable != 0) {
-			unsigned long bytesRead;
-			char buffer[1024];						// TODO: Obviously, you should replace this scuffed buffering system with a proper reading class that dynamically scales it's buffer to minimize syscalls. That'll keep up with whatever buffer size the system will use for the pipe inner-structure.
-			if (!ReadFile(parentOutputReadHandle, buffer, sizeof(buffer), &bytesRead, nullptr)) {
-				std::cerr << "ReadFile from parentOutputReadHandle failed\n";
-				std::cerr << strerror(GetLastError()) << '\n';
-				exit(EXIT_FAILURE);
-			}
-			std::cout.write(buffer, bytesRead);					// TODO: To reiterate: Don't use buffered output, the output is already being buffered by the pipe, it doesn't do you any good, just makes the whole ordeal slower.
+		else if (GetLastError() == ERROR_BROKEN_PIPE) { outputClosed = true; }
+		else {
+			color::initErrorColoring();
+			std::cerr << color::red << "ERROR: failed to poll child output pipe\n" << color::reset;
+			color::release();
+			break;
 		}
+
+
+
 /*
 		if (HasOverlappedIoCompleted(&readOutputEvent)) {
 			unsigned long bytesRead;
@@ -255,6 +343,16 @@ void managePipes() {
 
 		// TODO: You're gonna have to put some sort of sleep thing in here so you don't take up 100% of a core with this thread. Or maybe just use 100% of the core, idk.
 	}
+
+	outputReader.release();
+	//inputReader
+	errorReader.release();
+	releasePipes();
+	CloseHandle(procInfo.hThread);
+	GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0);
+	WaitForSingleObject(procInfo.hProcess, INFINITE);				// TODO: Will interrupting this with a SIGINT handler cause it to abort or to retry. Will userland get executation back. AFAIK, there isn't a EINTR error code thing here, so those two options are the only ones.
+	CloseHandle(procInfo.hProcess);
+	exit(EXIT_FAILURE);												// NOTE: Reaching this area is most probably do to some system thing, so exit with failure.
 }
 
 std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
@@ -286,7 +384,7 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 
 	std::cerr << buffer << '\n';					// TODO: Temp code, remove this later.
 
-	PROCESS_INFORMATION procInfo = { };
+	procInfo = { };
 
 	STARTUPINFOA startupInfo = { };
 	startupInfo.cb = sizeof(STARTUPINFOA);
@@ -301,7 +399,6 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 	// NOTE: The way it is now, CreateProcessA can change most of the contents, and if it changes the pointer to point to something else, we don't care because the pointer is just a copy. This means that we are as safe as we can be. The only danger comes from the possible modification of the NUL character, which CreateProcessA probably won't do because why should it.
 	// NOTE: I should also point out that the docs say that CreateProcessW is the one that changes the string, not CreateProcessA, so we should be safe. The only reason I'm taking these precautions is because the parameter isn't marked with const and I don't totally trust the docs.
 
-	std::thread pipeManagerThread(managePipes);
 
 	if (!CreateProcessA(nullptr, innerBuffer, nullptr, nullptr, true, 0, nullptr, nullptr, &startupInfo, &procInfo)) {
 		std::cerr << "had some trouble starting child process\n";
@@ -310,14 +407,15 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 		// TODO: Be more specific here and branch over what the error actually is. If it's user-made you should exit with success and if it's a system issue you should exit with failure.
 	}
 
+	managePipes();
+
 	WaitForSingleObject(procInfo.hProcess, INFINITE);				// TODO: Handle error here.
-	pipeManagerThread.join();
 	unsigned long exitCode;
 	GetExitCodeProcess(procInfo.hProcess, &exitCode);
 	std::cerr << exitCode << '\n';
 
-	CloseHandle(procInfo.hProcess);						// TODO: Handle errors here too.
 	CloseHandle(procInfo.hThread);
+	CloseHandle(procInfo.hProcess);						// TODO: Handle errors here too.
 
 	CloseHandle(childOutputHandle);				// TODO: See if you can cause the other thread to somehow read an EOF instead of breaking the pipe. It has more to do with the code of the other thread than the code of this thread.
 	CloseHandle(childInputHandle);
@@ -328,13 +426,14 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 
 char* intToString(uint64_t value) {
 	char* result = new char[20];
-	_ui64toa(value, result, 10);					// TODO: This is temporary, you should make your own algorithm for doing this. These can get sort of complicated if you tune them to your hardware, but it's a good excersize, you should do it.
-	return result;
+	//_ui64toa(value, result, 10);					// TODO: This is temporary, you should make your own algorithm for doing this. These can get sort of complicated if you tune them to your hardware, but it's a good excersize, you should do it.
+	if (_ui64toa_s(value, result, sizeof(result), 10) == 0) { return result; }
+	return nullptr;
 }
 
 char* doubleToString(double value) {
 	char* result = new char[128];
-	sprintf(result, "%f", value);
+	if (sprintf_s(result, sizeof(result), "%f", value) == -1) { return nullptr; }
 	return result;
 }
 
@@ -372,8 +471,10 @@ void manageArgs(int argc, const char* const * argv) {
 			if (flags::timeAccuracy) { elapsedTimeString = intToString(std::chrono::duration_cast<std::chrono::duration<uint64_t, std::ratio<3600, 1>>>(elapsedTime).count()); break; }
 			elapsedTimeString = doubleToString(std::chrono::duration_cast<std::chrono::duration<double, std::ratio<3600, 1>>>(elapsedTime).count()); break;
 		}
-		std::cerr << elapsedTimeString << '\n';
-		delete[] elapsedTimeString;
+		if (elapsedTimeString) {
+			std::cerr << elapsedTimeString << '\n';
+			delete[] elapsedTimeString;
+		}
 	}
 }
 
