@@ -268,37 +268,44 @@ void managePipes() {
 	while (true) {
 		if (PeekNamedPipe(parentOutputReadHandle, nullptr, 0, nullptr, &bytesAvailable, nullptr)) {
 			if (bytesAvailable != 0) {
-				unsigned long bytesRead = outputReader.read();
+				unsigned long bytesRead = outputReader.read();				// TODO: You could probably just reuse the bytesAvailable variable. Change the name to something more general if you do though.
 				if (bytesRead != 0) {
 					if (_write(STDOUT_FILENO, outputReader.buffer, bytesRead) == -1) {
 						color::initErrorColoring();
 						std::cerr << color::red << "ERROR: failed to write to parent stdout\n" << color::reset;
 						color::release();
-						outputReader.release();
+						/*outputReader.release();
 						//inputReader
 						errorReader.release();					// TODO: Make sure you release everything that you need to everywhere before you call exit.
 						releasePipes();
 						exit(EXIT_FAILURE);						// NOTE: exit doesn't call the destructors of your stack objects. It calls other things (including handlers registered with atexit and the destructors of static objects), but not the destructors of local stack objects. BE WARE!!!!
+						*/
+						break;
 					}
 				}
 				else {
 					color::initErrorColoring();
 					std::cerr << color::red << "ERROR: failed to read from child stdout\n" << color::reset;
 					color::release();
-					outputReader.release();
-					//inputReader
-					errorReader.release();
-					releasePipes();					// TODO: Replace these with break, just like the below code does.
-					exit(EXIT_FAILURE);
+					break;
 				}
 			}
 		}
-		else if (GetLastError() == ERROR_BROKEN_PIPE) { outputClosed = true; }
+		else if (GetLastError() == ERROR_BROKEN_PIPE) {
+			outputClosed = true;
+		}
 		else {
 			color::initErrorColoring();
 			std::cerr << color::red << "ERROR: failed to poll child output pipe\n" << color::reset;
 			color::release();
 			break;
+		}
+
+		if (outputClosed) {
+			outputReader.release();
+			//inputReader
+			errorReader.release();
+			return;
 		}
 
 
@@ -375,7 +382,7 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 		}
 	}
 	else {
-		for (int i = 0; i < argc; i++) {
+		for (int i = 1; i < argc; i++) {
 			buffer += '\"';
 			buffer += argv[i];
 			buffer += "\" ";
@@ -419,7 +426,7 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 
 	CloseHandle(childOutputHandle);				// TODO: See if you can cause the other thread to somehow read an EOF instead of breaking the pipe. It has more to do with the code of the other thread than the code of this thread.
 	CloseHandle(childInputHandle);
-	CloseHandle(childErrorHandle);
+	CloseHandle(childErrorHandle);						// TODO: We should just release all the pipes at the end of managePipes right? Why aren't we doing that? less messy code.
 
 	return std::chrono::high_resolution_clock::now() - startTime;
 }
