@@ -265,7 +265,7 @@ void managePipes() {
 						//inputReader
 						errorReader.release();					// TODO: Make sure you release everything that you need to everywhere before you call exit.
 						releasePipes();
-						exit(EXIT_FAILURE);						// NOTE: exit doesn't call the destructors of your stack objects. It calls other things (including handlers registered with atexit and the destructors of static objects), but not the destructors of local stack objects. BE WARE!!!!
+						exit(EXIT_FAILURE);
 						*/
 						break;
 					}
@@ -273,17 +273,36 @@ void managePipes() {
 				else { reportError("failed to read from child stdout"); break; }
 			}
 		}
-		else if (GetLastError() == ERROR_BROKEN_PIPE) { outputClosed = true; }
+		else if (GetLastError() == ERROR_BROKEN_PIPE) {
+			if (errorClosed) {
+				outputReader.release();
+				//inputReader
+				errorReader.release();
+				closeParentPipeHandles();
+				return;
+			}
+			outputClosed = true;
+		}
 		else { reportError("failed to poll child output pipe"); break; }
 
-		if (outputClosed && errorClosed) {
-			outputReader.release();
-			//inputReader
-			errorReader.release();
-			closeParentPipeHandles();
-			return;
+		if (PeekNamedPipe(parentErrorReadHandle, nullptr, 0, nullptr, &byteAmount, nullptr)) {
+			if (byteAmount != 0) {
+				byteAmount = errorReader.read();
+				if (byteAmount != 0) { if (_write(STDERR_FILENO, errorReader.buffer, byteAmount) == -1) { reportError("failed to write to parent stderr"); break; } }
+				else { reportError("failed to read from child stderr"); break; }
+			}
 		}
-
+		else if (GetLastError() == ERROR_BROKEN_PIPE) {
+			if (outputClosed) {
+				outputReader.release();
+				//inputReader
+				errorReader.release();
+				closeParentPipeHandles();
+				return;
+			}
+			errorClosed = true;
+		}
+		else { reportError("failed to poll child error pipe"); break; }
 
 
 /*
@@ -335,7 +354,8 @@ void managePipes() {
 	GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0);
 	WaitForSingleObject(procInfo.hProcess, INFINITE);				// TODO: Will interrupting this with a SIGINT handler cause it to abort or to retry. Will userland get executation back. AFAIK, there isn't a EINTR error code thing here, so those two options are the only ones.
 	CloseHandle(procInfo.hProcess);
-	exit(EXIT_FAILURE);												// NOTE: Reaching this area is most probably do to some system thing, so exit with failure.
+	exit(EXIT_FAILURE);												// NOTE: Reaching this area is most probably due to some system thing, so exit with failure.
+	// NOTE: exit doesn't call the destructors of your stack objects. It calls other things (including handlers registered with atexit and the destructors of static objects), but not the destructors of local stack objects. BE WARE!!!!
 }
 
 std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
@@ -426,7 +446,6 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 	}
 	if (!CloseHandle(procInfo.hProcess)) {
 		reportError("failed to close child process handle");
-		CloseHandle(procInfo.hProcess);
 		exit(EXIT_FAILURE);
 	}
 
@@ -434,17 +453,22 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 	return std::chrono::high_resolution_clock::now() - startTime;
 }
 
-char* intToString(uint64_t value) {
-	char* result = new char[20];			// TODO: You should probably pass these pointers in as variables so the calling code can have them on the stack, putting them on heap is pretty pointless.
+#define ELAPSED_TIME_STRING_SIZE 128
+
+// NOTE: type (&name)[size] is the syntax for an array reference, which is super useful in some cases. Why? Because it enforces the size of the array at compile-time. So you can't pass anything into the function except an array of the correct size. Compiler has no way of checking this properly if you use pointers, which means those aren't allowed either, which is also useful in some cases.
+void intToString(char (&output)[ELAPSED_TIME_STRING_SIZE], uint64_t value) {
 	//_ui64toa(value, result, 10);					// TODO: This is temporary, you should make your own algorithm for doing this. These can get sort of complicated if you tune them to your hardware, but it's a good excersize, you should do it.
-	if (_ui64toa_s(value, result, 20, 10) == 0) { return result; }
-	return nullptr;
+	if (_ui64toa_s(value, output, 20, 10) != 0) {					// NOTE: An unsigned int64 can be 20 digits long at maximum, which is why we only write to the first 20 bytes of the output array. The output array is larger because it needs to work with doubleToString as well.
+		reportError("failed to convert elapsed time integer to string");
+		exit(EXIT_FAILURE);				// TODO: The number conversion function above might actually fail if it doesn't have enough space to write NUL character, which it doesn't right now if we use the biggest possible numbers. Definitely check that and debug it if it is true.
+	}									// TODO: Also, the fact that there might not be a NUL character means trouble for the later code that measures the string, since it doesn't know when to stop. You need to fix all this some how.
 }
 
-char* doubleToString(double value) {
-	char* result = new char[128];
-	if (sprintf_s(result, 128, "%f", value) == -1) { return nullptr; }
-	return result;
+void doubleToString(char (&output)[ELAPSED_TIME_STRING_SIZE], double value) {
+	if (sprintf_s(output, ELAPSED_TIME_STRING_SIZE, "%f", value) == -1) {
+		reportError("failed to convert elapsed time double to string");
+		exit(EXIT_FAILURE);
+	}
 }
 
 void manageArgs(int argc, const char* const * argv) {
@@ -457,34 +481,30 @@ void manageArgs(int argc, const char* const * argv) {
 		isErrorColored = forcedErrorColoring;																		// If everything went great with parsing the cmdline args, finally set output coloring to what the user wants it to be. It is necessary to do this here because of the garantee that we wrote above.
 		CreatePipes();
 		std::chrono::nanoseconds elapsedTime = runChildProcess(targetProgramArgCount, argv + targetProgramIndex);
-		char* elapsedTimeString;
+		char elapsedTimeString[ELAPSED_TIME_STRING_SIZE];
 		switch (flags::timeUnit) {
 		case 0:
-			if (flags::timeAccuracy) { elapsedTimeString = intToString(std::chrono::duration_cast<std::chrono::duration<uint64_t, std::nano>>(elapsedTime).count()); break; }
-			elapsedTimeString = doubleToString(std::chrono::duration_cast<std::chrono::duration<double, std::nano>>(elapsedTime).count()); break;
+			if (flags::timeAccuracy) { intToString(elapsedTimeString, std::chrono::duration_cast<std::chrono::duration<uint64_t, std::nano>>(elapsedTime).count()); break; }
+			doubleToString(elapsedTimeString, std::chrono::duration_cast<std::chrono::duration<double, std::nano>>(elapsedTime).count()); break;
 		case 1:
-			if (flags::timeAccuracy) { elapsedTimeString = intToString(std::chrono::duration_cast<std::chrono::duration<uint64_t, std::micro>>(elapsedTime).count()); break; }
-			elapsedTimeString = doubleToString(std::chrono::duration_cast<std::chrono::duration<double, std::micro>>(elapsedTime).count()); break;
+			if (flags::timeAccuracy) { intToString(elapsedTimeString, std::chrono::duration_cast<std::chrono::duration<uint64_t, std::micro>>(elapsedTime).count()); break; }
+			doubleToString(elapsedTimeString, std::chrono::duration_cast<std::chrono::duration<double, std::micro>>(elapsedTime).count()); break;
 		case 2:
-			if (flags::timeAccuracy) { elapsedTimeString = intToString(std::chrono::duration_cast<std::chrono::duration<uint64_t, std::milli>>(elapsedTime).count()); break; }
-			elapsedTimeString = doubleToString(std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(elapsedTime).count()); break;
+			if (flags::timeAccuracy) { intToString(elapsedTimeString, std::chrono::duration_cast<std::chrono::duration<uint64_t, std::milli>>(elapsedTime).count()); break; }
+			doubleToString(elapsedTimeString, std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(elapsedTime).count()); break;
 		case 3:
-			if (flags::timeAccuracy) { elapsedTimeString = intToString(std::chrono::duration_cast<std::chrono::duration<uint64_t>>(elapsedTime).count()); break; }
-			elapsedTimeString = doubleToString(std::chrono::duration_cast<std::chrono::duration<double>>(elapsedTime).count()); break;
+			if (flags::timeAccuracy) { intToString(elapsedTimeString, std::chrono::duration_cast<std::chrono::duration<uint64_t>>(elapsedTime).count()); break; }
+			doubleToString(elapsedTimeString, std::chrono::duration_cast<std::chrono::duration<double>>(elapsedTime).count()); break;
 		case 4:
-			if (flags::timeAccuracy) { elapsedTimeString = intToString(std::chrono::duration_cast<std::chrono::duration<uint64_t, std::ratio<60, 1>>>(elapsedTime).count()); break; }
-			elapsedTimeString = doubleToString(std::chrono::duration_cast<std::chrono::duration<double, std::ratio<60, 1>>>(elapsedTime).count()); break;
+			if (flags::timeAccuracy) { intToString(elapsedTimeString, std::chrono::duration_cast<std::chrono::duration<uint64_t, std::ratio<60, 1>>>(elapsedTime).count()); break; }
+			doubleToString(elapsedTimeString, std::chrono::duration_cast<std::chrono::duration<double, std::ratio<60, 1>>>(elapsedTime).count()); break;
 		case 5:
-			if (flags::timeAccuracy) { elapsedTimeString = intToString(std::chrono::duration_cast<std::chrono::duration<uint64_t, std::ratio<3600, 1>>>(elapsedTime).count()); break; }
-			elapsedTimeString = doubleToString(std::chrono::duration_cast<std::chrono::duration<double, std::ratio<3600, 1>>>(elapsedTime).count()); break;
+			if (flags::timeAccuracy) { intToString(elapsedTimeString, std::chrono::duration_cast<std::chrono::duration<uint64_t, std::ratio<3600, 1>>>(elapsedTime).count()); break; }
+			doubleToString(elapsedTimeString, std::chrono::duration_cast<std::chrono::duration<double, std::ratio<3600, 1>>>(elapsedTime).count()); break;
 		}
-		if (elapsedTimeString) {
-			if (_write(STDERR_FILENO, elapsedTimeString, strlen(elapsedTimeString)) == -1) {			// TODO: Is this the best way to do this? The measuring might be unnecessary if there is some syscall that measures for you.
-				reportError("failed to write elapsed time to parent stderr");
-				delete[] elapsedTimeString;
-				exit(EXIT_FAILURE);
-			}
-			delete[] elapsedTimeString;
+		if (_write(STDERR_FILENO, elapsedTimeString, strlen(elapsedTimeString)) == -1) {			// TODO: Is this the best way to do this? The measuring might be unnecessary if there is some syscall that measures for you.
+			reportError("failed to write elapsed time to parent stderr");
+			exit(EXIT_FAILURE);
 		}
 	}
 }
