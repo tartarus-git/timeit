@@ -414,6 +414,10 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 		// TODO: Be more specific here and branch over what the error actually is. If it's user-made you should exit with success and if it's a system issue you should exit with failure.
 	}
 
+	CloseHandle(childOutputHandle);				// TODO: See if you can cause the other thread to somehow read an EOF instead of breaking the pipe. It has more to do with the code of the other thread than the code of this thread.
+	CloseHandle(childInputHandle);
+	CloseHandle(childErrorHandle);						// TODO: We should just release all the pipes at the end of managePipes right? Why aren't we doing that? less messy code.
+
 	managePipes();
 
 	WaitForSingleObject(procInfo.hProcess, INFINITE);				// TODO: Handle error here.
@@ -424,23 +428,20 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 	CloseHandle(procInfo.hThread);
 	CloseHandle(procInfo.hProcess);						// TODO: Handle errors here too.
 
-	CloseHandle(childOutputHandle);				// TODO: See if you can cause the other thread to somehow read an EOF instead of breaking the pipe. It has more to do with the code of the other thread than the code of this thread.
-	CloseHandle(childInputHandle);
-	CloseHandle(childErrorHandle);						// TODO: We should just release all the pipes at the end of managePipes right? Why aren't we doing that? less messy code.
 
 	return std::chrono::high_resolution_clock::now() - startTime;
 }
 
 char* intToString(uint64_t value) {
-	char* result = new char[20];
+	char* result = new char[20];			// TODO: You should probably pass these pointers in as variables so the calling code can have them on the stack, putting them on heap is pretty pointless.
 	//_ui64toa(value, result, 10);					// TODO: This is temporary, you should make your own algorithm for doing this. These can get sort of complicated if you tune them to your hardware, but it's a good excersize, you should do it.
-	if (_ui64toa_s(value, result, sizeof(result), 10) == 0) { return result; }
+	if (_ui64toa_s(value, result, 20, 10) == 0) { return result; }
 	return nullptr;
 }
 
 char* doubleToString(double value) {
 	char* result = new char[128];
-	if (sprintf_s(result, sizeof(result), "%f", value) == -1) { return nullptr; }
+	if (sprintf_s(result, 128, "%f", value) == -1) { return nullptr; }
 	return result;
 }
 
