@@ -14,8 +14,9 @@
 #include <io.h>
 
 #include <cstring>
+#include <string>
 
-//#define STDIN_FILENO 0
+#define STDIN_FILENO 0
 #define STDOUT_FILENO 1
 #define STDERR_FILENO 2
 
@@ -216,19 +217,21 @@ void CreatePipes() {
 }
 
 class BufferedHandleReader {
-public:
+protected:
 	HANDLE handle;
 
-	char* buffer;
 	unsigned long bufferSize;
-
-	BufferedHandleReader(HANDLE handle) : handle(handle), bufferSize(BUFFERED_HANDLE_READER_BUFFER_START_SIZE) { buffer = new char[BUFFERED_HANDLE_READER_BUFFER_START_SIZE]; }
 
 	void increaseBufferSize() {
 		unsigned long newBufferSize = bufferSize + BUFFERED_HANDLE_READER_BUFFER_STEP_SIZE;
 		char* temp = (char*)realloc(buffer, newBufferSize);
 		if (temp) { buffer = temp; bufferSize = newBufferSize; }
 	}
+
+public:
+	char* buffer;
+
+	BufferedHandleReader(HANDLE handle) : handle(handle), bufferSize(BUFFERED_HANDLE_READER_BUFFER_START_SIZE) { buffer = new char[BUFFERED_HANDLE_READER_BUFFER_START_SIZE]; }
 
 	unsigned long read() {
 		unsigned long bytesRead;
@@ -241,7 +244,43 @@ public:
 	~BufferedHandleReader() { if (buffer) { delete[] buffer; } }	// SIDE-NOTE FOR FUTURE REFERENCE: Every time, you google if new and delete can throw, and you keep forgetting every time. Just remember, they can both throw. EXCEPT if you use a special form of new, which you should remember to use from now on because it's useful.
 };
 
+class BufferedStdinReader : public BufferedHandleReader {
+	using BufferedHandleReader::read;			// NOTE: This makes an exception to the rule of making the base class's public members public. You can also make an exception to the rule of making base class's public members private (when in that situation), if you write the using statement in a public block.
+
+public:
+	BufferedStdinReader() : BufferedHandleReader((HANDLE)true) { }
+
+	int read() {
+		int bytesRead = _read(STDIN_FILENO, buffer, bufferSize);
+		if (bytesRead == -1) { return -1; }
+		if (bytesRead == bufferSize) { increaseBufferSize(); }
+		return bytesRead;
+	}
+
+	using BufferedHandleReader::release;
+};
+
 PROCESS_INFORMATION procInfo;
+
+bool shouldRun = true;
+
+void manageInputPipe() {
+	BufferedStdinReader inputReader;
+
+	while (shouldRun) {
+		int bytesRead = inputReader.read();
+		switch (bytesRead) {
+		case 0: shouldRun = false; inputReader.release(); return;
+		case -1: shouldRun = false; // TODO: Should I use a mutex and handle multithreaded access to stderr, or should I just set a flag on this threads exit and the main thread will pick up my slack and output that error?
+		default:
+			unsigned long bytesWritten;
+			if (!WriteFile(parentInputWriteHandle, inputReader.buffer, bytesRead, &bytesWritten, nullptr)) {
+				shouldRun = false;
+				// TODO: Another error to handle here, how should we go about doing this?
+			}
+		}
+	}
+}
 
 void managePipes() {
 	bool outputClosed = false;
@@ -252,7 +291,7 @@ void managePipes() {
 	
 	BufferedHandleReader outputReader(parentOutputReadHandle);
 	//BufferedHandleReader inputReader									// TODO: I don't see a way to do this in a non-blocking way. This is the same problem we had at the beginning of grep development. Just start a new thread and handle it in a blocking way on there. Don't worry about SIGINT stuff, that handles well because either EOF is sent or the syscall is cancelled, I'm not quite sure which one yet, you should test.
-	BufferedHandleReader errorReader(parentErrorReadHandle);
+	BufferedHandleReader errorReader(parentErrorReadHandle);				// TODO: You should move every instantiation and processing thing you can to before the CreateProcess thing. So that we get into reading the stuff as soon as possible. Use globals probably.
 
 	while (true) {
 		if (PeekNamedPipe(parentOutputReadHandle, nullptr, 0, nullptr, &byteAmount, nullptr)) {
@@ -351,7 +390,7 @@ void managePipes() {
 	errorReader.release();
 	closeParentPipeHandles();
 	CloseHandle(procInfo.hThread);
-	GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0);
+	GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0);				// TODO: Is this really the only way to send the signal to the child process? Will the child process even get it like this? Research.
 	WaitForSingleObject(procInfo.hProcess, INFINITE);				// TODO: Will interrupting this with a SIGINT handler cause it to abort or to retry. Will userland get executation back. AFAIK, there isn't a EINTR error code thing here, so those two options are the only ones.
 	CloseHandle(procInfo.hProcess);
 	exit(EXIT_FAILURE);												// NOTE: Reaching this area is most probably due to some system thing, so exit with failure.
@@ -382,7 +421,8 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 		}
 	}
 
-	std::cerr << buffer << '\n';					// TODO: Temp code, remove this later.
+	//std::cerr << buffer << '\n';					// TODO: Temp code, remove this later.
+	_write(STDERR_FILENO, buffer.c_str(), buffer.length() + 1);			// TODO: Applies to this as well.
 
 	procInfo = { };
 
@@ -398,7 +438,6 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 	char* innerBuffer = buffer.data();						// NOTE: We have to use data() here instead of c_str() because it's undefined behaviour otherwise. The deal with data() is that you're allowed to change everything except the NUL termination character at the end of c-style string that is returned.
 	// NOTE: The way it is now, CreateProcessA can change most of the contents, and if it changes the pointer to point to something else, we don't care because the pointer is just a copy. This means that we are as safe as we can be. The only danger comes from the possible modification of the NUL character, which CreateProcessA probably won't do because why should it.
 	// NOTE: I should also point out that the docs say that CreateProcessW is the one that changes the string, not CreateProcessA, so we should be safe. The only reason I'm taking these precautions is because the parameter isn't marked with const and I don't totally trust the docs.
-
 
 	if (!CreateProcessA(nullptr, innerBuffer, nullptr, nullptr, true, 0, nullptr, nullptr, &startupInfo, &procInfo)) {
 		switch (GetLastError()) {
