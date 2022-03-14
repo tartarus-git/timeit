@@ -13,7 +13,7 @@
 #include <iostream>
 #include <io.h>
 
-#include <string>
+#include <cstring>
 
 //#define STDIN_FILENO 0
 #define STDOUT_FILENO 1
@@ -24,7 +24,11 @@
 #define ANSI_ESC_CODE_SUFFIX "m"
 #define ANSI_ESC_CODE_MIN_SIZE ((sizeof(ANSI_ESC_CODE_PREFIX) - 1) + (sizeof(ANSI_ESC_CODE_SUFFIX) - 1))
 
-const char* const helpText = "timeit runs the specified program with the specified arguments and prints the elapsed time until program completion to stderr. The stdin and stdout of timeit are both redirected to the stdin and stdout of the specified program, allowing " \
+#define ANSI_RED_CODE_LENGTH ANSI_ESC_CODE_MIN_SIZE + 2
+#define ANSI_RESET_CODE_LENGTH ANSI_ESC_CODE_MIN_SIZE + 1
+
+// NOTE: The difference between const char[] and const char* is that const char* is stored in .rodata and const char[] is stored in .data. That means you can edit this help text at runtime even though it's const.
+const char helpText[] = "timeit runs the specified program with the specified arguments and prints the elapsed time until program completion to stderr. The stdin and stdout of timeit are both redirected to the stdin and stdout of the specified program, allowing " \
 							 "the construct to be used seamlessly within piped chains of programs.\n" \
 							 "\n" \
 							 "usage: timeit [--expand-args || --error-color <auto|on|off> || --unit <nanoseconds|microseconds|milliseconds|seconds|minutes|hours> || --accuracy <double|int>] <program> <arguments>...\n" \
@@ -46,19 +50,17 @@ bool isErrorColored;
 // Coloring
 namespace color {
 	char* red;			// TODO: Make sure nothing relied on the previous nullptr tactic that carried over from grep.
-	void unsafeInitRed() { red = new char[ANSI_ESC_CODE_MIN_SIZE + 2 + 1]; memcpy(red, ANSI_ESC_CODE_PREFIX "31" ANSI_ESC_CODE_SUFFIX, ANSI_ESC_CODE_MIN_SIZE + 2 + 1); }
-	void unsafeInitPipedRed() { red = new char; *red = '\0'; }
+	void initRed() { red = new char[ANSI_RED_CODE_LENGTH]; memcpy(red, ANSI_ESC_CODE_PREFIX "31" ANSI_ESC_CODE_SUFFIX, ANSI_RED_CODE_LENGTH); }
+	//void initPipedRed() { red = new char; *red = '\0'; }
 
 	char* reset;
-	void unsafeInitReset() { reset = new char[ANSI_ESC_CODE_MIN_SIZE + 1 + 1]; memcpy(reset, ANSI_ESC_CODE_PREFIX "0" ANSI_ESC_CODE_SUFFIX, ANSI_ESC_CODE_MIN_SIZE + 1 + 1); }
-	void unsafeInitPipedReset() { reset = new char; *reset = '\0'; }
+	void initReset() { reset = new char[ANSI_RESET_CODE_LENGTH]; memcpy(reset, ANSI_ESC_CODE_PREFIX "0" ANSI_ESC_CODE_SUFFIX, ANSI_RESET_CODE_LENGTH); }
+	//void initPipedReset() { reset = new char; *reset = '\0'; }
 
-	void initErrorColoring() { if (isErrorColored) { unsafeInitRed(); unsafeInitReset(); return; } unsafeInitPipedRed(); unsafeInitPipedReset(); }
+	void initErrorColoring() { initRed(); initReset(); return; }
 
 	void release() { delete[] color::red; delete[] color::reset; }
 }
-
-// TODO: Be super const correct on all the read-only strings and stuff, in case you haven't done that already.
 
 namespace flags {
 	bool expandArgs = false;
@@ -66,8 +68,34 @@ namespace flags {
 	bool timeAccuracy = false;
 }
 
+template <size_t N>
+void reportError(const char (&msg)[N]) {
+	if (isErrorColored) {
+		color::initErrorColoring();
+		char buffer[ANSI_RED_CODE_LENGTH + sizeof("ERROR: ") - 1 + N - 1 + 1 + ANSI_RESET_CODE_LENGTH];							// NOTE: This code block is to create our own specific buffering for these substrings, to avoid syscalls.
+		memcpy(buffer, color::red, ANSI_RED_CODE_LENGTH);
+		memcpy(buffer + ANSI_RED_CODE_LENGTH, "ERROR: ", sizeof("ERROR: ") - 1);
+		memcpy(buffer + ANSI_RED_CODE_LENGTH + sizeof("ERROR: ") - 1, msg, N - 1);
+		buffer[ANSI_RED_CODE_LENGTH + sizeof("ERROR: ") - 1 + N - 1] = '\n';
+		memcpy(buffer + ANSI_RED_CODE_LENGTH + sizeof("ERROR: ") - 1 + N - 1 + 1, color::reset, ANSI_RESET_CODE_LENGTH);
+		_write(STDERR_FILENO, buffer, sizeof(buffer));				// TODO: Why is this line green. Intellisense mess-up. Somehow, the buffer's bounds aren't right or something, figure out why.
+		color::release();
+		return;
+	}
+		char buffer[sizeof("ERROR: ") - 1 + N - 1 + 1];
+		memcpy(buffer, "ERROR: ", sizeof("ERROR: ") - 1);
+		memcpy(buffer + sizeof("ERROR: ") - 1, msg, N - 1);
+		buffer[sizeof("ERROR: ") - 1 + N - 1] = '\n';
+		_write(STDERR_FILENO, buffer, sizeof(buffer));				// TODO: Why is this line green. Intellisense mess-up. Somehow, the buffer's bounds aren't right or something, figure out why.
+}
+
 // NOTE: I have previously only shown help when output is connected to TTY, so as not to pollute stdout when piping. Back then, help was shown sometimes when it wasn't requested, which made it prudent to include that feature. Now, you have to explicitly ask for help, making TTY branching unnecessary.
-void showHelp() { std::cout << helpText; }
+void showHelp() {
+	if (_write(STDOUT_FILENO, helpText, sizeof(helpText) - 1) != -1) {			// NOTE: It's ok to use unbuffered IO here because we always exit after writing this, no point in buffering.
+		reportError("failed to write help text to stdout");
+		exit(EXIT_FAILURE);
+	}
+}
 
 bool forcedErrorColoring;					// NOTE: GARANTEE: If something goes wrong while parsing the cmdline args and an error message is necessary, the error message will always be printed with the default coloring (based on TTY/piped mode).
 
@@ -84,55 +112,34 @@ unsigned int parseFlags(int argc, const char* const * argv) {																// 
 
 				if (!strcmp(flagTextStart, "error-color")) {
 					i++;					// TODO: Change all the std::couts to std::cerrs.
-					if (i == argc) {
-						color::initErrorColoring();
-						std::cerr << color::red << "ERROR: the --error-color flag was not supplied with a value\n" << color::reset;
-						color::release();
-						exit(EXIT_SUCCESS);
-					}
+					if (i == argc) { reportError("the --error-color flag was not supplied with a value"); exit(EXIT_SUCCESS); }
+
 					if (!strcmp(argv[i], "on")) { forcedErrorColoring = true; continue; }
 					if (!strcmp(argv[i], "off")) { forcedErrorColoring = false; continue; }
 					if (!strcmp(argv[i], "auto")) { forcedErrorColoring = isErrorColored; continue; }
-					color::initErrorColoring();
-					std::cerr << color::red << "ERROR: invalid value for --error-color flag\n" << color::reset;
-					color::release();
-					exit(EXIT_SUCCESS);
+					reportError("invalid value for --error-color flag"); exit(EXIT_SUCCESS);
 				}
 
 				if (!strcmp(flagTextStart, "unit")) {
 					i++;
-					if (i == argc) {
-						color::initErrorColoring();
-						std::cerr << color::red << "ERROR: the --unit flag was not supplied with a value\n" << color::reset;
-						color::release();
-						exit(EXIT_SUCCESS);
-					}
+					if (i == argc) { reportError("the --unit flag was not supplied with a value"); exit(EXIT_SUCCESS); }
+
 					if (!strcmp(argv[i], "nanoseconds")) { flags::timeUnit = 0; continue; }
 					if (!strcmp(argv[i], "microseconds")) { flags::timeUnit = 1; continue; }
 					if (!strcmp(argv[i], "milliseconds")) { flags::timeUnit = 2; continue; }
 					if (!strcmp(argv[i], "seconds")) { flags::timeUnit = 3; continue; }
 					if (!strcmp(argv[i], "minutes")) { flags::timeUnit = 4; continue; }
 					if (!strcmp(argv[i], "hours")) { flags::timeUnit = 5; continue; }
-					color::initErrorColoring();
-					std::cerr << color::red << "ERROR: invalid value for --unit flag\n" << color::reset;
-					color::release();
-					exit(EXIT_SUCCESS);
+					reportError("invalid value for --unit flag"); exit(EXIT_SUCCESS);
 				}
 
 				if (!strcmp(flagTextStart, "accuracy")) {
 					i++;
-					if (i == argc) {
-						color::initErrorColoring();
-						std::cerr << color::red << "ERROR: the --accuracy flag was not supplied with a value\n" << color::reset;
-						color::release();
-						exit(EXIT_SUCCESS);
-					}
+					if (i == argc) { reportError("the --accuracy flag was not supplied with a value"); exit(EXIT_SUCCESS); }
+
 					if (!strcmp(argv[i], "double")) { flags::timeAccuracy = false; continue; }				// NOTE: This might seem unnecessary, but we need it in case the --accuracy flag is used twice and has already changed the value.
 					if (!strcmp(argv[i], "int")) { flags::timeAccuracy = true; continue; }
-					color::initErrorColoring();
-					std::cerr << color::red << "ERROR: invalid value for --accuracy flag\n" << color::reset;
-					color::release();
-					exit(EXIT_SUCCESS);
+					reportError("invalid value for --accuracy flag"); exit(EXIT_SUCCESS);
 				}
 
 				if (!strcmp(flagTextStart, "help")) { showHelp(); exit(EXIT_SUCCESS); }
@@ -143,10 +150,7 @@ unsigned int parseFlags(int argc, const char* const * argv) {																// 
 				//color::release();
 				//exit(EXIT_SUCCESS);
 			}
-			color::initErrorColoring();
-			std::cerr << color::red << "ERROR: one or more flag arguments are invalid\n" << color::reset;
-			color::release();
-			exit(EXIT_SUCCESS);
+			reportError("one or more flag arguments are invalid"); exit(EXIT_SUCCESS);
 		}
 		return i;																									// Return index of first arg that isn't flag arg. Helps calling code parse args.
 	}
@@ -161,45 +165,31 @@ HANDLE parentOutputReadHandle;
 HANDLE parentInputWriteHandle;
 HANDLE parentErrorReadHandle;
 
-void releasePipes() {							// NOTE: No need to return whether or not we were successful because when we call this function, we don't actually ever care if we were successful or not.
-	CloseHandle(childOutputHandle);
+void closeParentPipeHandles() {							// NOTE: No need to return whether or not we were successful because when we call this function, we don't actually ever care if we were successful or not.
 	CloseHandle(parentOutputReadHandle);
-
-	CloseHandle(childInputHandle);
 	CloseHandle(parentInputWriteHandle);
-	
-	CloseHandle(childErrorHandle);
 	CloseHandle(parentErrorReadHandle);
 }
 
 void CreatePipes() {
 	if (!CreatePipe(&parentOutputReadHandle, &childOutputHandle, nullptr, 0)) {
-		color::initErrorColoring();			// TODO: Make sure there are no extra punctuation in your error messages.
-		std::cerr << color::red << "ERROR: failed to create pipe from child stdout to parent\n" << color::reset;
-		color::release();
-		exit(EXIT_FAILURE);						// NOTE: We exit with EXIT_FAILURE here because this is presumably a system error and it shouldn't really be the users fault AFAIK.
+		reportError("failed to create pipe from child stdout to parent"); exit(EXIT_FAILURE);						// NOTE: We exit with EXIT_FAILURE here because this is presumably a system error and it shouldn't really be the users fault AFAIK.
 	}
 	if (!SetHandleInformation(childOutputHandle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
-		color::initErrorColoring();
-		std::cerr << color::red << "ERROR: failed to set child stdout handle to inheritable\n" << color::reset;
-		color::release();
+		reportError("failed to set child stdout handle to inheritable");
 		CloseHandle(childOutputHandle);
 		CloseHandle(parentOutputReadHandle);
 		exit(EXIT_FAILURE);
 	}
 
 	if (!CreatePipe(&childInputHandle, &parentInputWriteHandle, nullptr, 0)) {
-		color::initErrorColoring();
-		std::cerr << color::red << "ERROR: failed to create pipe from parent to child stdin\n" << color::reset;
-		color::release();
+		reportError("failed to create pipe from parent to child stdin");
 		CloseHandle(childOutputHandle);
 		CloseHandle(parentOutputReadHandle);
 		exit(EXIT_FAILURE);
 	}
 	if (!SetHandleInformation(childInputHandle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
-		color::initErrorColoring();
-		std::cerr << color::red << "ERROR: failed to set child stdin handle to inheritable\n" << color::reset;
-		color::release();
+		reportError("failed to set child stdin handle to inheritable");
 		CloseHandle(childOutputHandle);
 		CloseHandle(parentOutputReadHandle);
 		CloseHandle(childInputHandle);
@@ -208,9 +198,7 @@ void CreatePipes() {
 	}
 
 	if (!CreatePipe(&parentErrorReadHandle, &childErrorHandle, nullptr, 0)) {
-		color::initErrorColoring();
-		std::cerr << color::red << "ERROR: failed to create pipe from child stderr to parent\n" << color::reset;
-		color::release();
+		reportError("failed to create pipe from child stderr to parent");
 		CloseHandle(childOutputHandle);
 		CloseHandle(parentOutputReadHandle);
 		CloseHandle(childInputHandle);
@@ -218,10 +206,11 @@ void CreatePipes() {
 		exit(EXIT_FAILURE);
 	}
 	if (!SetHandleInformation(childErrorHandle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
-		color::initErrorColoring();
-		std::cerr << color::red << "ERROR: failed to set child stderr handle to inheritable\n" << color::reset;
-		color::release();
-		releasePipes();
+		reportError("failed to set child stderr handle to inheritable");
+		CloseHandle(childOutputHandle);
+		CloseHandle(childInputHandle);
+		CloseHandle(childErrorHandle);
+		closeParentPipeHandles();
 		exit(EXIT_FAILURE);
 	}
 }
@@ -259,21 +248,19 @@ void managePipes() {
 	bool inputClosed = false;
 	bool errorClosed = false;
 
-	unsigned long bytesAvailable;
+	unsigned long byteAmount;
 	
 	BufferedHandleReader outputReader(parentOutputReadHandle);
 	//BufferedHandleReader inputReader									// TODO: I don't see a way to do this in a non-blocking way. This is the same problem we had at the beginning of grep development. Just start a new thread and handle it in a blocking way on there. Don't worry about SIGINT stuff, that handles well because either EOF is sent or the syscall is cancelled, I'm not quite sure which one yet, you should test.
 	BufferedHandleReader errorReader(parentErrorReadHandle);
 
 	while (true) {
-		if (PeekNamedPipe(parentOutputReadHandle, nullptr, 0, nullptr, &bytesAvailable, nullptr)) {
-			if (bytesAvailable != 0) {
-				unsigned long bytesRead = outputReader.read();				// TODO: You could probably just reuse the bytesAvailable variable. Change the name to something more general if you do though.
-				if (bytesRead != 0) {
-					if (_write(STDOUT_FILENO, outputReader.buffer, bytesRead) == -1) {
-						color::initErrorColoring();
-						std::cerr << color::red << "ERROR: failed to write to parent stdout\n" << color::reset;
-						color::release();
+		if (PeekNamedPipe(parentOutputReadHandle, nullptr, 0, nullptr, &byteAmount, nullptr)) {
+			if (byteAmount != 0) {
+				byteAmount = outputReader.read();
+				if (byteAmount != 0) {
+					if (_write(STDOUT_FILENO, outputReader.buffer, byteAmount) == -1) {
+						reportError("failed to write to parent stdout");
 						/*outputReader.release();
 						//inputReader
 						errorReader.release();					// TODO: Make sure you release everything that you need to everywhere before you call exit.
@@ -283,28 +270,17 @@ void managePipes() {
 						break;
 					}
 				}
-				else {
-					color::initErrorColoring();
-					std::cerr << color::red << "ERROR: failed to read from child stdout\n" << color::reset;
-					color::release();
-					break;
-				}
+				else { reportError("failed to read from child stdout"); break; }
 			}
 		}
-		else if (GetLastError() == ERROR_BROKEN_PIPE) {
-			outputClosed = true;
-		}
-		else {
-			color::initErrorColoring();
-			std::cerr << color::red << "ERROR: failed to poll child output pipe\n" << color::reset;
-			color::release();
-			break;
-		}
+		else if (GetLastError() == ERROR_BROKEN_PIPE) { outputClosed = true; }
+		else { reportError("failed to poll child output pipe"); break; }
 
-		if (outputClosed) {
+		if (outputClosed && errorClosed) {
 			outputReader.release();
 			//inputReader
 			errorReader.release();
+			closeParentPipeHandles();
 			return;
 		}
 
@@ -354,7 +330,7 @@ void managePipes() {
 	outputReader.release();
 	//inputReader
 	errorReader.release();
-	releasePipes();
+	closeParentPipeHandles();
 	CloseHandle(procInfo.hThread);
 	GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0);
 	WaitForSingleObject(procInfo.hProcess, INFINITE);				// TODO: Will interrupting this with a SIGINT handler cause it to abort or to retry. Will userland get executation back. AFAIK, there isn't a EINTR error code thing here, so those two options are the only ones.
@@ -365,10 +341,7 @@ void managePipes() {
 std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 	if (argv[0][0] == '\0') {				// NOTE: I thought this was impossible, but apparently it isn't, so we have to check for it and report an error if it occurs.
 											// NOTE: The reason we don't just let CreateProcessA detect this error is because it will probably just filter out the nothingness and use the first argument as the program name, which is very terrible.
-		color::initErrorColoring();
-		std::cerr << color::red << "ERROR: target program name cannot be empty\n" << color::reset;
-		color::release();
-		exit(EXIT_SUCCESS);
+		reportError("target program name cannot be empty"); exit(EXIT_SUCCESS);
 	}
 
 	std::string buffer;
@@ -408,25 +381,54 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 
 
 	if (!CreateProcessA(nullptr, innerBuffer, nullptr, nullptr, true, 0, nullptr, nullptr, &startupInfo, &procInfo)) {
+		switch (GetLastError()) {
+			// TODO: Find the errors that are necessary here and conditionally throw different errors.
+		}
+
+		// TODO: Remove the following after you've done the above.
 		std::cerr << "had some trouble starting child process\n";
-		std::cerr << strerror(GetLastError()) << '\n';
 		exit(EXIT_FAILURE);
-		// TODO: Be more specific here and branch over what the error actually is. If it's user-made you should exit with success and if it's a system issue you should exit with failure.
 	}
 
-	CloseHandle(childOutputHandle);				// TODO: See if you can cause the other thread to somehow read an EOF instead of breaking the pipe. It has more to do with the code of the other thread than the code of this thread.
-	CloseHandle(childInputHandle);
-	CloseHandle(childErrorHandle);						// TODO: We should just release all the pipes at the end of managePipes right? Why aren't we doing that? less messy code.
+	if (!CloseHandle(childOutputHandle)) {
+		reportError("failed to close child output pipe handle");
+		CloseHandle(childInputHandle);
+		CloseHandle(childErrorHandle);
+		closeParentPipeHandles();
+		CloseHandle(procInfo.hThread);
+		CloseHandle(procInfo.hProcess);
+		exit(EXIT_FAILURE);
+	}
+	if (!CloseHandle(childInputHandle)) {
+		reportError("failed to close child input pipe handle");
+		CloseHandle(childErrorHandle);
+		closeParentPipeHandles();
+		CloseHandle(procInfo.hThread);
+		CloseHandle(procInfo.hProcess);
+		exit(EXIT_FAILURE);
+	}
+	if (!CloseHandle(childErrorHandle)) {
+		reportError("failed to close child error pipe handle");
+		closeParentPipeHandles();
+		CloseHandle(procInfo.hThread);
+		CloseHandle(procInfo.hProcess);
+		exit(EXIT_FAILURE);
+	}
 
 	managePipes();
 
 	WaitForSingleObject(procInfo.hProcess, INFINITE);				// TODO: Handle error here.
-	unsigned long exitCode;
-	GetExitCodeProcess(procInfo.hProcess, &exitCode);
-	std::cerr << exitCode << '\n';
 
-	CloseHandle(procInfo.hThread);
-	CloseHandle(procInfo.hProcess);						// TODO: Handle errors here too.
+	if (!CloseHandle(procInfo.hThread)) {
+		reportError("failed to close child process main thread handle");
+		CloseHandle(procInfo.hProcess);
+		exit(EXIT_FAILURE);
+	}
+	if (!CloseHandle(procInfo.hProcess)) {
+		reportError("failed to close child process handle");
+		CloseHandle(procInfo.hProcess);
+		exit(EXIT_FAILURE);
+	}
 
 
 	return std::chrono::high_resolution_clock::now() - startTime;
@@ -450,10 +452,7 @@ void manageArgs(int argc, const char* const * argv) {
 	unsigned int targetProgramArgCount = argc - targetProgramIndex;
 	switch (targetProgramArgCount) {
 	case 0:
-		color::initErrorColoring();
-		std::cout << color::red << "ERROR: too few arguments\n" << color::reset;
-		color::release();
-		exit(EXIT_SUCCESS);
+		reportError("too few arguments"); exit(EXIT_SUCCESS);
 	default:
 		isErrorColored = forcedErrorColoring;																		// If everything went great with parsing the cmdline args, finally set output coloring to what the user wants it to be. It is necessary to do this here because of the garantee that we wrote above.
 		CreatePipes();
@@ -480,14 +479,17 @@ void manageArgs(int argc, const char* const * argv) {
 			elapsedTimeString = doubleToString(std::chrono::duration_cast<std::chrono::duration<double, std::ratio<3600, 1>>>(elapsedTime).count()); break;
 		}
 		if (elapsedTimeString) {
-			std::cerr << elapsedTimeString << '\n';
+			if (_write(STDERR_FILENO, elapsedTimeString, strlen(elapsedTimeString)) == -1) {			// TODO: Is this the best way to do this? The measuring might be unnecessary if there is some syscall that measures for you.
+				reportError("failed to write elapsed time to parent stderr");
+				delete[] elapsedTimeString;
+				exit(EXIT_FAILURE);
+			}
 			delete[] elapsedTimeString;
 		}
 	}
 }
 
 int main(int argc, char* const * argv) {
-	std::cerr.sync_with_stdio(false);
 	// TODO: Don't use std::cout, write it to stdout unbuffered.
 	// TODO: Don't use std::cin, you gotta do some ReadFile stuff to allow async and signal catching.
 
@@ -504,10 +506,6 @@ int main(int argc, char* const * argv) {
 	else { ANSISetupFailure: isErrorColored = false; forcedErrorColoring = false; }
 
 	manageArgs(argc, argv);
-
-	CloseHandle(parentOutputReadHandle);
-	CloseHandle(parentInputWriteHandle);
-	CloseHandle(parentErrorReadHandle);
 
 	return 0;
 }
