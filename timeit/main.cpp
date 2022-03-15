@@ -1,5 +1,6 @@
 #define BUFFERED_HANDLE_READER_BUFFER_START_SIZE 2048			// TODO: Make this number the correct one, look at grep or something, somewhere I have the right number here.
 #define BUFFERED_HANDLE_READER_BUFFER_STEP_SIZE 2048			// TODO: Same for this one.
+#define BUFFERED_HANDLE_READER_BUFFER_MAX_SIZE 2048				// TODO: Same for this one.
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -8,6 +9,7 @@
 #include <malloc.h>
 
 #include <thread>
+#include <mutex>
 #include <chrono>
 
 #include <iostream>
@@ -69,6 +71,10 @@ namespace flags {
 	bool timeAccuracy = false;
 }
 
+// SIDE-NOTE: It is implementation defined whether global variables that are dynamically initialized (their value isn't compile-time calculated and stored in .data, it needs to be calculated at runtime) are lazy initialized or whether they are initialized before main(). Don't rely on one of those behaviours.
+
+std::mutex reportError_mutex;	// NOTE: I know you want to destruct this mutex explicitly because the code looks better (arguable in this case), but the mutex class literally doesn't have any sort of release function, and calling the destructor directly is a terrible idea because then it'll probably get destructed twice.
+
 template <size_t N>
 void reportError(const char (&msg)[N]) {
 	if (isErrorColored) {
@@ -79,15 +85,17 @@ void reportError(const char (&msg)[N]) {
 		memcpy(buffer + ANSI_RED_CODE_LENGTH + sizeof("ERROR: ") - 1, msg, N - 1);
 		buffer[ANSI_RED_CODE_LENGTH + sizeof("ERROR: ") - 1 + N - 1] = '\n';
 		memcpy(buffer + ANSI_RED_CODE_LENGTH + sizeof("ERROR: ") - 1 + N - 1 + 1, color::reset, ANSI_RESET_CODE_LENGTH);
+		std::lock_guard lock(reportError_mutex);
 		_write(STDERR_FILENO, buffer, sizeof(buffer));				// TODO: Why is this line green. Intellisense mess-up. Somehow, the buffer's bounds aren't right or something, figure out why.
 		color::release();
 		return;
 	}
-		char buffer[sizeof("ERROR: ") - 1 + N - 1 + 1];
-		memcpy(buffer, "ERROR: ", sizeof("ERROR: ") - 1);
-		memcpy(buffer + sizeof("ERROR: ") - 1, msg, N - 1);
-		buffer[sizeof("ERROR: ") - 1 + N - 1] = '\n';
-		_write(STDERR_FILENO, buffer, sizeof(buffer));				// TODO: Why is this line green. Intellisense mess-up. Somehow, the buffer's bounds aren't right or something, figure out why.
+	char buffer[sizeof("ERROR: ") - 1 + N - 1 + 1];
+	memcpy(buffer, "ERROR: ", sizeof("ERROR: ") - 1);
+	memcpy(buffer + sizeof("ERROR: ") - 1, msg, N - 1);
+	buffer[sizeof("ERROR: ") - 1 + N - 1] = '\n';
+	std::lock_guard lock(reportError_mutex);
+	_write(STDERR_FILENO, buffer, sizeof(buffer));				// TODO: Why is this line green. Intellisense mess-up. Somehow, the buffer's bounds aren't right or something, figure out why.
 }
 
 // NOTE: I have previously only shown help when output is connected to TTY, so as not to pollute stdout when piping. Back then, help was shown sometimes when it wasn't requested, which made it prudent to include that feature. Now, you have to explicitly ask for help, making TTY branching unnecessary.
@@ -223,7 +231,8 @@ protected:
 	unsigned long bufferSize;
 
 	void increaseBufferSize() {
-		unsigned long newBufferSize = bufferSize + BUFFERED_HANDLE_READER_BUFFER_STEP_SIZE;
+		unsigned long newBufferSize = bufferSize + BUFFERED_HANDLE_READER_BUFFER_STEP_SIZE;				// TODO: Probably rename these defines because now we have the derived class that also indirectly uses them. Make it more general.
+		if (newBufferSize > BUFFERED_HANDLE_READER_BUFFER_MAX_SIZE) { return; }
 		char* temp = (char*)realloc(buffer, newBufferSize);
 		if (temp) { buffer = temp; bufferSize = newBufferSize; }
 	}
@@ -252,9 +261,8 @@ public:
 
 	int read() {
 		int bytesRead = _read(STDIN_FILENO, buffer, bufferSize);
-		if (bytesRead == -1) { return -1; }
 		if (bytesRead == bufferSize) { increaseBufferSize(); }
-		return bytesRead;
+		return bytesRead;												// NOTE: Will return -1 if _read failed and returned -1. This is important behaviour and isn't a mistake.
 	}
 
 	using BufferedHandleReader::release;
@@ -264,23 +272,31 @@ PROCESS_INFORMATION procInfo;
 
 bool shouldRun = true;
 
+bool childInputPipeManagerThreadSuccess = false;
+
 void manageInputPipe() {
 	BufferedStdinReader inputReader;
 
+	int bytesRead;
+	unsigned long bytesWritten;					// NOTE: We don't technically even want this, but we have to include and use it for the syscall because it is required by win32 documentation.
+
 	while (shouldRun) {
-		int bytesRead = inputReader.read();
+		bytesRead = inputReader.read();
 		switch (bytesRead) {
-		case 0: shouldRun = false; inputReader.release(); return;
-		case -1: shouldRun = false; // TODO: Should I use a mutex and handle multithreaded access to stderr, or should I just set a flag on this threads exit and the main thread will pick up my slack and output that error?
+		case 0: inputReader.release(); childInputPipeManagerThreadSuccess = true; return;
+		case -1: reportError("failed to read from parent stdin"); childInputPipeManagerThreadSuccess = true; return;
 		default:
-			unsigned long bytesWritten;
 			if (!WriteFile(parentInputWriteHandle, inputReader.buffer, bytesRead, &bytesWritten, nullptr)) {
-				shouldRun = false;
-				// TODO: Another error to handle here, how should we go about doing this?
+				if (GetLastError() == ERROR_BROKEN_PIPE) { return; }
+				reportError("failed to write to child stdin");
+				childInputPipeManagerThreadSuccess = true;
+				return;
 			}
 		}
 	}
 }
+
+bool waitForChildInputManagerThread(std::thread& thread) { thread.join(); return childInputPipeManagerThreadSuccess; }
 
 void managePipes() {
 	bool outputClosed = false;
@@ -292,6 +308,8 @@ void managePipes() {
 	BufferedHandleReader outputReader(parentOutputReadHandle);
 	//BufferedHandleReader inputReader									// TODO: I don't see a way to do this in a non-blocking way. This is the same problem we had at the beginning of grep development. Just start a new thread and handle it in a blocking way on there. Don't worry about SIGINT stuff, that handles well because either EOF is sent or the syscall is cancelled, I'm not quite sure which one yet, you should test.
 	BufferedHandleReader errorReader(parentErrorReadHandle);				// TODO: You should move every instantiation and processing thing you can to before the CreateProcess thing. So that we get into reading the stuff as soon as possible. Use globals probably.
+
+	std::thread childInputPipeManagerThread(manageInputPipe);
 
 	while (true) {
 		if (PeekNamedPipe(parentOutputReadHandle, nullptr, 0, nullptr, &byteAmount, nullptr)) {
@@ -317,7 +335,8 @@ void managePipes() {
 				outputReader.release();
 				//inputReader
 				errorReader.release();
-				closeParentPipeHandles();
+				if (waitForChildInputManagerThread) { }			// TODO: Find a way to handle the errors here in a smooth way, as little code duplication as possible, while also not including needless inefficiencies for the sake of nice-looking code.
+				closeParentPipeHandles();				// TODO: There is no reason to hold off on two of the three handles until this statement, if you break it up, it'll make more sense. Also, you need to handle errors here, since this isn't a last ditch effort.
 				return;
 			}
 			outputClosed = true;
@@ -336,6 +355,7 @@ void managePipes() {
 				outputReader.release();
 				//inputReader
 				errorReader.release();
+				if (waitForChildInputManagerThread) { }
 				closeParentPipeHandles();
 				return;
 			}
@@ -385,12 +405,13 @@ void managePipes() {
 		// TODO: You're gonna have to put some sort of sleep thing in here so you don't take up 100% of a core with this thread. Or maybe just use 100% of the core, idk.
 	}
 
+	//shouldRun = false;
 	outputReader.release();
-	//inputReader
 	errorReader.release();
+	GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0);				// TODO: Is this really the only way to send the signal to the child process? Will the child process even get it like this? Research.
+	childInputPipeManagerThread.join();
 	closeParentPipeHandles();
 	CloseHandle(procInfo.hThread);
-	GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0);				// TODO: Is this really the only way to send the signal to the child process? Will the child process even get it like this? Research.
 	WaitForSingleObject(procInfo.hProcess, INFINITE);				// TODO: Will interrupting this with a SIGINT handler cause it to abort or to retry. Will userland get executation back. AFAIK, there isn't a EINTR error code thing here, so those two options are the only ones.
 	CloseHandle(procInfo.hProcess);
 	exit(EXIT_FAILURE);												// NOTE: Reaching this area is most probably due to some system thing, so exit with failure.
