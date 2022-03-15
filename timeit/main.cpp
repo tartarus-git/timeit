@@ -5,6 +5,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 
+#include <csignal>
+
 #include <stdlib.h>
 #include <malloc.h>
 
@@ -272,6 +274,8 @@ PROCESS_INFORMATION procInfo;
 
 bool shouldRun = true;
 
+void signalHandler(int signum) { shouldRun = false; }		// NOTE: SIGILL and SIGTERM aren't generated in windows, you can generate them yourself though and pass them around. Also, signals do cause interrupts and aren't run on separate threads, EXCEPT SIGINT. SIGINT starts new thread and makes it asynchronous. BE WARE!!
+
 bool childInputPipeManagerThreadSuccess = false;
 
 void manageInputPipe() {
@@ -283,7 +287,7 @@ void manageInputPipe() {
 	while (shouldRun) {
 		bytesRead = inputReader.read();
 		switch (bytesRead) {
-		case 0: inputReader.release(); childInputPipeManagerThreadSuccess = true; return;
+		case 0: reportError("DEBUG: got EOF on parent stdin reader"); inputReader.release(); childInputPipeManagerThreadSuccess = true; return;
 		case -1: reportError("failed to read from parent stdin"); childInputPipeManagerThreadSuccess = true; return;
 		default:
 			if (!WriteFile(parentInputWriteHandle, inputReader.buffer, bytesRead, &bytesWritten, nullptr)) {
@@ -335,7 +339,11 @@ void managePipes() {
 				outputReader.release();
 				//inputReader
 				errorReader.release();
-				if (waitForChildInputManagerThread) { }			// TODO: Find a way to handle the errors here in a smooth way, as little code duplication as possible, while also not including needless inefficiencies for the sake of nice-looking code.
+				//WaitForSingleObject(procInfo.hProcess, INFINITE);
+				// TODO: When the child process exits and this code is reached, the input reader is still waiting for input.
+				// Artificially sending interrupt doesn't work since the terminal is normally the one to send the EOF when the program gets interrupted (which isn't standard behaviour anyway AFAIK)
+				// Closing your own stdin doesn't work because it'll wait until the read operation is finished, which will never finish. You're in a real pickle here, figure it out.
+				if (!waitForChildInputManagerThread(childInputPipeManagerThread)) { }			// TODO: Find a way to handle the errors here in a smooth way, as little code duplication as possible, while also not including needless inefficiencies for the sake of nice-looking code.
 				closeParentPipeHandles();				// TODO: There is no reason to hold off on two of the three handles until this statement, if you break it up, it'll make more sense. Also, you need to handle errors here, since this isn't a last ditch effort.
 				return;
 			}
@@ -355,13 +363,24 @@ void managePipes() {
 				outputReader.release();
 				//inputReader
 				errorReader.release();
-				if (waitForChildInputManagerThread) { }
+				//WaitForSingleObject(procInfo.hProcess, INFINITE);
+				if (!waitForChildInputManagerThread(childInputPipeManagerThread)) { }
 				closeParentPipeHandles();
 				return;
 			}
 			errorClosed = true;
 		}
 		else { reportError("failed to poll child error pipe"); break; }
+
+		if (!shouldRun) {
+			// NOTE: The child process also received the Ctrl + C, so we should be able to return without worry.
+			// NOTE: If the child process hangs and doesn't want to die, so do we. This is good, because then the user can see that something is wrong. If we were to close even though the child process hangs, the user might never know there is still a hanging process in the background.
+			outputReader.release();
+			errorReader.release();
+			closeParentPipeHandles();			// NOTE: Closing the parentInputWrite pipe handle here sends EOF to child program, which it might use to know when it got a Ctrl + C, so we send it to them to be nice (this is usually a job my terminal does, but we have to do it here).
+			if (!waitForChildInputManagerThread(childInputPipeManagerThread)) { }			// NOTE: If we happen to close the pipe while the input manager thread is writing to it, our CloseHandle syscall will just wait, so no big deal.
+			return;
+		}
 
 
 /*
@@ -408,10 +427,12 @@ void managePipes() {
 	//shouldRun = false;
 	outputReader.release();
 	errorReader.release();
-	GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0);				// TODO: Is this really the only way to send the signal to the child process? Will the child process even get it like this? Research.
-	childInputPipeManagerThread.join();
-	closeParentPipeHandles();
+	CloseHandle(parentOutputReadHandle);
+	CloseHandle(parentErrorReadHandle);
 	CloseHandle(procInfo.hThread);
+	GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0);				// TODO: Is this really the only way to send the signal to the child process? Will the child process even get it like this? Research.
+	CloseHandle(parentInputWriteHandle);			// NOTE: Same as way above, sends EOF to child process, which it might need to register Ctrl + C.
+	childInputPipeManagerThread.join();
 	WaitForSingleObject(procInfo.hProcess, INFINITE);				// TODO: Will interrupting this with a SIGINT handler cause it to abort or to retry. Will userland get executation back. AFAIK, there isn't a EINTR error code thing here, so those two options are the only ones.
 	CloseHandle(procInfo.hProcess);
 	exit(EXIT_FAILURE);												// NOTE: Reaching this area is most probably due to some system thing, so exit with failure.
@@ -570,6 +591,8 @@ void manageArgs(int argc, const char* const * argv) {
 }
 
 int main(int argc, char* const * argv) {
+	if (signal(SIGINT, signalHandler) == SIG_ERR) { reportError("failed to set up SIGINT signal handling"); return 1; }
+	if (signal(SIGBREAK, signalHandler) == SIG_ERR) { reportError("failed to set up SIGBREAK signal handling"); return 1; }
 	// TODO: Don't use std::cout, write it to stdout unbuffered.
 	// TODO: Don't use std::cin, you gotta do some ReadFile stuff to allow async and signal catching.
 
