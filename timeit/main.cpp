@@ -100,6 +100,7 @@ void showHelp() {
 	}
 }
 
+// This variable keeps track of the error coloring that the user requested from the command-line.
 bool forcedErrorColoring;					// NOTE: GARANTEE: If something goes wrong while parsing the cmdline args and an error message is necessary, the error message will always be printed with the default coloring (based on TTY/piped mode).
 
 // Parse flags at the argument level. Calls parseFlagGroup if it encounters flag groups and handles word flags (those with -- in front) separately.
@@ -148,10 +149,7 @@ unsigned int parseFlags(int argc, const char* const * argv) {																// 
 				if (!strcmp(flagTextStart, "help")) { showHelp(); exit(EXIT_SUCCESS); }
 				if (!strcmp(flagTextStart, "h")) { showHelp(); exit(EXIT_SUCCESS); }
 
-				//color::initErrorColoring();								// NOTE: Not necessary because of fall-through.
-				//std::cerr << color::red << "ERROR: one or more flag arguments are invalid\n" << color::reset;
-				//color::release();
-				//exit(EXIT_SUCCESS);
+				// NOTE: Usually, I would report an error here, but since there are no valid flags with single "-", and since the following error handling code is very applicable to this case as well, we can just fall through to the following error handling code and everything is a-okay.
 			}
 			reportError("one or more flag arguments are invalid"); exit(EXIT_SUCCESS);
 		}
@@ -162,15 +160,16 @@ unsigned int parseFlags(int argc, const char* const * argv) {																// 
 
 void signalHandler(int signum) { }						// NOTE: This is supposed to be empty. At no point in our program's execution do we ever need to react to a signal being sent, so the only function of this line is to stop specific signals from stopping our program and instead make them give us time.
 
+// This function is responsible for actually running the program which is to be timed. The program is run as a child process of this program. It is given our stdout, stdin and stderr handles and it is able to freely interact with the console and the user.
 std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
-	if (argv[0][0] == '\0') {				// NOTE: I thought this was impossible, but apparently it isn't, so we have to check for it and report an error if it occurs.
-											// NOTE: The reason we don't just let CreateProcessA detect this error is because it will probably just filter out the nothingness and use the first argument as the program name, which is very terrible.
-											// NOTE: We don't care about the other arguments being zero because those get passed onto the child process anyway. It'll be the one to deal with any discrepencies in that regard.
-		reportError("target program name cannot be empty"); exit(EXIT_SUCCESS);
-	}
+	// NOTE: I thought this was impossible, but apparently it isn't, so we have to check for it and report an error if it occurs.
+	// NOTE: The reason we don't just let CreateProcessA detect this error is because it will probably just filter out the nothingness and use the first argument as the program name, which is very terrible.
+	// NOTE: We don't care about the other arguments being zero because those get passed onto the child process anyway. It'll be the one to deal with any discrepencies in that regard.
+	if (argv[0][0] == '\0') { reportError("target program name cannot be empty"); exit(EXIT_SUCCESS); }
 
+	// Fill a buffer with the required command-line to invoke the target program with all the specified arguments.
 	std::string buffer;
-	buffer += '\"';									// IMPORTANT NOTE: These are super necessary because you wouldn't otherwise be able to run programs that have names with spaces in them. Even worse, you could accidentally run a completely different program than the one you wanted, which is terrible behaviour. That is why we add the quotes, to prevent against those two things.
+	buffer += '\"';		// IMPORTANT NOTE: These are super necessary because you wouldn't otherwise be able to run programs that have names with spaces in them. Even worse, you could accidentally run a completely different program than the one you wanted, which is terrible behaviour. That is why we add the quotes, to prevent against those two things.
 	buffer += argv[0];
 	buffer += "\" ";
 	if (flags::expandArgs) {						// NOTE: The difference in behviour here is achieved by adding quotes around the arguments. When quotes are present, arguments with spaces are still considered as one argument. Without quotes, the given arguments will be split up into many arguments when CreateProcessA creates the child process.
@@ -189,16 +188,16 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 
 	PROCESS_INFORMATION procInfo;				// NOTE: No need to set the fields to zero, since this is only for getting data out from CreateProcessA. The OS fills these, we don't need to zero them out.
 
-	STARTUPINFOA startupInfo = { };
+	STARTUPINFOA startupInfo = { };							// We could fill this struct with information about how exactly the target program is to be started, which permissions it has, etc..., but all that is unnecessary for this application, so we just zero everything out and set the mandatory cb field.
 	startupInfo.cb = sizeof(STARTUPINFOA);
 
-	std::chrono::high_resolution_clock::time_point startTime = std::chrono::high_resolution_clock::now();
+	std::chrono::high_resolution_clock::time_point startTime = std::chrono::high_resolution_clock::now();					// Record the current point in time. This will later be used to create a difference, which will then be used to calculate the execution-time of the target program.
 
-	char* innerBuffer = buffer.data();						// NOTE: We have to use data() here instead of c_str() because it's undefined behaviour otherwise. The deal with data() is that you're allowed to change everything except the NUL termination character at the end of c-style string that is returned.
-	// NOTE: The way it is now, CreateProcessA can change most of the contents, and if it changes the pointer to point to something else, we don't care because the pointer is just a copy. This means that we are as safe as we can be. The only danger comes from the possible modification of the NUL character, which CreateProcessA probably won't do because why should it.
-	// NOTE: I should also point out that the docs say that CreateProcessW is the one that changes the string, not CreateProcessA, so we should be safe. The only reason I'm taking these precautions is because the parameter isn't marked with const and I don't totally trust the docs.
-
-	if (!CreateProcessA(nullptr, innerBuffer, nullptr, nullptr, false, 0, nullptr, nullptr, &startupInfo, &procInfo)) {
+	// Finally actually create the child process.
+	// IMPORTANT NOTE: We have to use buffer.data() instead of buffer.c_str() because data() returns a modifiable c-string, which is necessary for CreateProcessA. The deal is that you're allowed to modify everything except the trailing NUL character, doing so would be UB.
+	// CreateProcessA almost definitely won't change the NUL character because why should it, and it won't change the c-string pointer because it just accepts a copy, meaning it literally can't. So the only thing it can really change is the meat of the c-string, which we don't care about.
+	// Also, I think (if I'm reading them right) the docs sat that CreateProcessW is the one that changes the string, not CreateProcessA, so we should be safe anyway. Strange that the argument isn't marked with const in CreateProcessA then.
+	if (!CreateProcessA(nullptr, buffer.data(), nullptr, nullptr, false, 0, nullptr, nullptr, &startupInfo, &procInfo)) {
 		reportError("couldn't start target program");				// NOTE: Sadly, the win32 docs don't really specify the possible error codes for CreateProcessA, so I don't know which cases to check for here. This generic error message will have to do.
 		exit(EXIT_SUCCESS);											// NOTE: The majority of errors in this spot are probably going to be caused by misspellings of the target program by the user, so we use EXIT_SUCCESS here.
 	}
