@@ -471,11 +471,10 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 
 	STARTUPINFOA startupInfo = { };
 	startupInfo.cb = sizeof(STARTUPINFOA);
-	startupInfo.hStdOutput = childOutputHandle;
+	//startupInfo.hStdOutput = childOutputHandle;
 	//startupInfo.hStdInput = childInputHandle;				// TODO: Make sure that the program name thing can't be put in the first argument of the below function. Maybe I was just doing it wrong before? Does it still discover the program in the same way?
-	startupInfo.hStdInput = nullptr;
-	startupInfo.hStdError = childErrorHandle;
-	startupInfo.dwFlags = STARTF_USESTDHANDLES;
+	//startupInfo.hStdError = childErrorHandle;
+	//startupInfo.dwFlags = STARTF_USESTDHANDLES;
 
 	std::chrono::high_resolution_clock::time_point startTime = std::chrono::high_resolution_clock::now();
 
