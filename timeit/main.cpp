@@ -26,21 +26,21 @@
 #define ANSI_RESET_CODE_LENGTH ANSI_ESC_CODE_MIN_SIZE + 1
 
 // NOTE: The difference between const char[] and const char* is that const char* is stored in .rodata and const char[] is stored in .data. That means you can edit this help text at runtime even though it's const.
-const char helpText[] = "timeit runs the specified program with the specified arguments and prints the elapsed time until program completion to stderr. The stdin and stdout of timeit are both redirected to the stdin and stdout of the specified program, allowing " \
-							 "the construct to be used seamlessly within piped chains of programs.\n" \
-							 "\n" \
-							 "usage: timeit [--expand-args || --error-color <auto|on|off> || --unit <nanoseconds|microseconds|milliseconds|seconds|minutes|hours> || --accuracy <double|int>] <program> <arguments>...\n" \
-							 "       timeit <--help || --h>            -->            shows help text\n" \
-							 "\n" \
-							 "arguments:\n" \
+const char helpText[] = "timeit runs the specified program with the specified arguments and prints the elapsed time until program completion to stderr. Standard input/output/error all flow through the encapsulating timeit process to and from the target program, allowing " \
+							"the construct to be used seamlessly within piped chains of programs.\n" \
+							"\n" \
+							"usage: timeit [--expand-args || --error-color <auto|on|off> || --unit <nanoseconds|microseconds|milliseconds|seconds|minutes|hours> || --accuracy <double|int>] <program> <arguments>...\n" \
+							"       timeit <--help || --h>            -->            shows help text\n" \
+							"\n" \
+							"arguments:\n" \
 								"\t--expand-args                 -->                  expand elements of <arguments>... that contain spaces into multiple arguments (default behaviour is to leave them as single arguments)\n" \
 								"\t--error-color <auto|on|off>   -->                  force a specific coloring behaviour for error messages (which are always printed to stderr) (default behaviour is auto)\n" \
 								"\t--unit <(see above)>          -->                  the unit to output the elapsed time in (default is seconds)\n" \
 								"\t--accuracy <double|int>       -->                  specify whether elapsed time is outputted as a decimal (double) or as a round number (int) (default is double)\n" \
 								"\t<program>                     -->                  the program which is to be timed\n" \
 								"\t<arguments>...                -->                  the arguments to pass to the target program\n" \
-							 "\n" \
-							 "NOTE: It is possible to specify a flag more than once. If this is the case, only the last occurrence will influence program behaviour.\n";
+							"\n" \
+							"NOTE: It is possible to specify a flag more than once. If this is the case, only the last occurrence will influence program behaviour.\n";
 
 // Flag to keep track of whether we should color errors or not.
 bool isErrorColored;
