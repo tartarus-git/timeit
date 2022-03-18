@@ -8,10 +8,10 @@
 #include <thread>
 #include <chrono>
 
-#include <io.h>
+#include <io.h>														// Needed for _isatty function.
 
-#include <cstring>
-#include <string>
+#include <cstring>													// Needed for some string manipulation function I think.
+#include <string>													// Needed for one single spot in which we use std::string.
 
 //#define STDIN_FILENO 0
 #define STDOUT_FILENO 1
@@ -45,7 +45,7 @@ const char helpText[] = "timeit runs the specified program with the specified ar
 // Flag to keep track of whether we should color errors or not.
 bool isErrorColored;
 
-// Output coloring.
+// Text coloring, this is only used for error messages in the case of this program.
 namespace color {
 	char* red;
 	void initRed() { red = new char[ANSI_RED_CODE_LENGTH]; memcpy(red, ANSI_ESC_CODE_PREFIX "31" ANSI_ESC_CODE_SUFFIX, ANSI_RED_CODE_LENGTH); }
@@ -58,6 +58,7 @@ namespace color {
 	void release() { delete[] color::red; delete[] color::reset; }
 }
 
+// Some of the command-line flags that one can set. The rest don't require global variables, so they're not in here.
 namespace flags {
 	bool expandArgs = false;
 	uint8_t timeUnit = 3;
@@ -69,12 +70,13 @@ namespace flags {
 // NOTE: I think the below note is useful, so I'm going to keep the whole line in even though it currently has nothing to do with the codebase anymore.
 //std::mutex reportError_mutex;	// NOTE: I know you want to destruct this mutex explicitly because the code looks better (arguable in this case), but the mutex class literally doesn't have any sort of release function, and calling the destructor directly is a terrible idea because then it'll probably get destructed twice.
 
+// This function makes it easy to report errors. It handles the coloring for you, as well as the formatting of the error string.
 template <size_t N>
 void reportError(const char (&msg)[N]) {
 	if (isErrorColored) {
 		color::initErrorColoring();
-		char buffer[ANSI_RED_CODE_LENGTH + sizeof("ERROR: ") - 1 + N - 1 + 1 + ANSI_RESET_CODE_LENGTH];							// NOTE: This code block is to create our own specific buffering for these substrings, to avoid syscalls.
-		memcpy(buffer, color::red, ANSI_RED_CODE_LENGTH);
+		char buffer[ANSI_RED_CODE_LENGTH + sizeof("ERROR: ") - 1 + N - 1 + 1 + ANSI_RESET_CODE_LENGTH];							// NOTE: This code block is to create our own specific buffering for these substrings, to avoid syscalls and make the whole thing as efficient as possible.
+		memcpy(buffer, color::red, ANSI_RED_CODE_LENGTH);																		// NOTE: Technically, it would be more efficient to write "ERROR: " in every error message individually, but that probably means the executable is larger because of the extra .rodata data, which is undesirable.
 		memcpy(buffer + ANSI_RED_CODE_LENGTH, "ERROR: ", sizeof("ERROR: ") - 1);
 		memcpy(buffer + ANSI_RED_CODE_LENGTH + sizeof("ERROR: ") - 1, msg, N - 1);
 		buffer[ANSI_RED_CODE_LENGTH + sizeof("ERROR: ") - 1 + N - 1] = '\n';
@@ -92,7 +94,7 @@ void reportError(const char (&msg)[N]) {
 
 // NOTE: I have previously only shown help when output is connected to TTY, so as not to pollute stdout when piping. Back then, help was shown sometimes when it wasn't requested, which made it prudent to include that feature. Now, you have to explicitly ask for help, making TTY branching unnecessary.
 void showHelp() {
-	if (_write(STDOUT_FILENO, helpText, sizeof(helpText) - 1) != -1) {			// NOTE: It's ok to use unbuffered IO here because we always exit after writing this, no point in buffering.
+	if (_write(STDOUT_FILENO, helpText, sizeof(helpText) - 1) == -1) {			// NOTE: It's ok to use unbuffered IO here because we always exit after writing this, no point in buffering.
 		reportError("failed to write help text to stdout");
 		exit(EXIT_FAILURE);
 	}
