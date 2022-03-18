@@ -313,7 +313,7 @@ void managePipes() {
 	//BufferedHandleReader inputReader									// TODO: I don't see a way to do this in a non-blocking way. This is the same problem we had at the beginning of grep development. Just start a new thread and handle it in a blocking way on there. Don't worry about SIGINT stuff, that handles well because either EOF is sent or the syscall is cancelled, I'm not quite sure which one yet, you should test.
 	BufferedHandleReader errorReader(parentErrorReadHandle);				// TODO: You should move every instantiation and processing thing you can to before the CreateProcess thing. So that we get into reading the stuff as soon as possible. Use globals probably.
 
-	std::thread childInputPipeManagerThread(manageInputPipe);
+	//std::thread childInputPipeManagerThread(manageInputPipe);
 
 	while (true) {
 		if (PeekNamedPipe(parentOutputReadHandle, nullptr, 0, nullptr, &byteAmount, nullptr)) {
@@ -343,7 +343,7 @@ void managePipes() {
 				// TODO: When the child process exits and this code is reached, the input reader is still waiting for input.
 				// Artificially sending interrupt doesn't work since the terminal is normally the one to send the EOF when the program gets interrupted (which isn't standard behaviour anyway AFAIK)
 				// Closing your own stdin doesn't work because it'll wait until the read operation is finished, which will never finish. You're in a real pickle here, figure it out.
-				if (!waitForChildInputManagerThread(childInputPipeManagerThread)) { }			// TODO: Find a way to handle the errors here in a smooth way, as little code duplication as possible, while also not including needless inefficiencies for the sake of nice-looking code.
+				//if (!waitForChildInputManagerThread(childInputPipeManagerThread)) { }			// TODO: Find a way to handle the errors here in a smooth way, as little code duplication as possible, while also not including needless inefficiencies for the sake of nice-looking code.
 				closeParentPipeHandles();				// TODO: There is no reason to hold off on two of the three handles until this statement, if you break it up, it'll make more sense. Also, you need to handle errors here, since this isn't a last ditch effort.
 				return;
 			}
@@ -354,6 +354,7 @@ void managePipes() {
 		if (PeekNamedPipe(parentErrorReadHandle, nullptr, 0, nullptr, &byteAmount, nullptr)) {
 			if (byteAmount != 0) {
 				byteAmount = errorReader.read();
+				// TODO: This needs to be locked with the same lock as the reportError thing, or else multithreading isn't going to work right.
 				if (byteAmount != 0) { if (_write(STDERR_FILENO, errorReader.buffer, byteAmount) == -1) { reportError("failed to write to parent stderr"); break; } }
 				else { reportError("failed to read from child stderr"); break; }
 			}
@@ -364,7 +365,7 @@ void managePipes() {
 				//inputReader
 				errorReader.release();
 				//WaitForSingleObject(procInfo.hProcess, INFINITE);
-				if (!waitForChildInputManagerThread(childInputPipeManagerThread)) { }
+				//if (!waitForChildInputManagerThread(childInputPipeManagerThread)) { }
 				closeParentPipeHandles();
 				return;
 			}
@@ -378,7 +379,7 @@ void managePipes() {
 			outputReader.release();
 			errorReader.release();
 			closeParentPipeHandles();			// NOTE: Closing the parentInputWrite pipe handle here sends EOF to child program, which it might use to know when it got a Ctrl + C, so we send it to them to be nice (this is usually a job my terminal does, but we have to do it here).
-			if (!waitForChildInputManagerThread(childInputPipeManagerThread)) { }			// NOTE: If we happen to close the pipe while the input manager thread is writing to it, our CloseHandle syscall will just wait, so no big deal.
+			//if (!waitForChildInputManagerThread(childInputPipeManagerThread)) { }			// NOTE: If we happen to close the pipe while the input manager thread is writing to it, our CloseHandle syscall will just wait, so no big deal.
 			return;
 		}
 
@@ -432,7 +433,7 @@ void managePipes() {
 	CloseHandle(procInfo.hThread);
 	GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0);				// TODO: Is this really the only way to send the signal to the child process? Will the child process even get it like this? Research.
 	CloseHandle(parentInputWriteHandle);			// NOTE: Same as way above, sends EOF to child process, which it might need to register Ctrl + C.
-	childInputPipeManagerThread.join();
+	//childInputPipeManagerThread.join();
 	WaitForSingleObject(procInfo.hProcess, INFINITE);				// TODO: Will interrupting this with a SIGINT handler cause it to abort or to retry. Will userland get executation back. AFAIK, there isn't a EINTR error code thing here, so those two options are the only ones.
 	CloseHandle(procInfo.hProcess);
 	exit(EXIT_FAILURE);												// NOTE: Reaching this area is most probably due to some system thing, so exit with failure.
@@ -471,7 +472,8 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 	STARTUPINFOA startupInfo = { };
 	startupInfo.cb = sizeof(STARTUPINFOA);
 	startupInfo.hStdOutput = childOutputHandle;
-	startupInfo.hStdInput = childInputHandle;				// TODO: Make sure that the program name thing can't be put in the first argument of the below function. Maybe I was just doing it wrong before? Does it still discover the program in the same way?
+	//startupInfo.hStdInput = childInputHandle;				// TODO: Make sure that the program name thing can't be put in the first argument of the below function. Maybe I was just doing it wrong before? Does it still discover the program in the same way?
+	startupInfo.hStdInput = nullptr;
 	startupInfo.hStdError = childErrorHandle;
 	startupInfo.dwFlags = STARTF_USESTDHANDLES;
 
