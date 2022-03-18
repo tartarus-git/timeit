@@ -1,6 +1,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 
+#include <csignal>
+
 #include <cstdlib>
 
 #include <thread>
@@ -156,6 +158,8 @@ unsigned int parseFlags(int argc, const char* const * argv) {																// 
 	return argc;																									// No non-flag argument was found. Return argc because it works nicely with calling code.
 }
 
+void signalHandler(int signum) { }						// NOTE: This is supposed to be empty. At no point in our program's execution do we ever need to react to a signal being sent, so the only function of this line is to stop specific signals from stopping our program and instead make them give us time.
+
 std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 	if (argv[0][0] == '\0') {				// NOTE: I thought this was impossible, but apparently it isn't, so we have to check for it and report an error if it occurs.
 											// NOTE: The reason we don't just let CreateProcessA detect this error is because it will probably just filter out the nothingness and use the first argument as the program name, which is very terrible.
@@ -273,6 +277,9 @@ void manageArgs(int argc, const char* const * argv) {
 }
 
 int main(int argc, char* const * argv) {
+	signal(SIGINT, signalHandler);																							// These two lines make it so that the program ignores both SIGINT and SIGBREAK signals as best as possible. SIGBREAK can only be ignored for 5 seconds, but that's actually good.
+	signal(SIGBREAK, signalHandler);
+
 	if (_isatty(STDERR_FILENO)) {
 		HANDLE stdErrHandle = GetStdHandle(STD_ERROR_HANDLE);
 		if (!stdErrHandle || stdErrHandle == INVALID_HANDLE_VALUE) { goto ANSISetupFailure; }
