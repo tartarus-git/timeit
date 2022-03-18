@@ -202,12 +202,16 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 		exit(EXIT_SUCCESS);											// NOTE: The majority of errors in this spot are probably going to be caused by misspellings of the target program by the user, so we use EXIT_SUCCESS here.
 	}
 
+	// Close the hThread handle as soon as possible since we never actually use it for anything. NOTE: Don't worry about something depending on it. All handles in Windows are ref-counted AFAIK, so as long as the child process is active and is using this handle, which it almost definitely is, it won't actually be closed until our child exits.
 	if (!CloseHandle(procInfo.hThread)) {
 		reportError("failed to close child process main thread handle");
 		CloseHandle(procInfo.hProcess);
 		exit(EXIT_FAILURE);
 	}
 
+	// Wait for the child process to exit. NOTE: If SIGINT or SIGBREAK is sent, we assume that the child process will handle it and exit, so that we can exit as well. If that doesn't happen and the child hangs, we hang with it so the user knows that something is hanging.
+	// If we didn't hang when the child hung, we could exit and the child would still exist, possibly without the user ever knowing. Since the child still has access to the console, maybe the console wouldn't continue until the child also exits, but we do it like this just in case (and also because it is easier).
+	// Plus, if we hang and the OS breaks us off, it's not really that bad. We don't have any unfreed resources (except hProcess, which isn't a big deal) at this point.
 	if (WaitForSingleObject(procInfo.hProcess, INFINITE) == WAIT_FAILED) {
 		reportError("failed to wait for child process to finish execution");
 		CloseHandle(procInfo.hProcess);
@@ -219,17 +223,20 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 		exit(EXIT_FAILURE);
 	}
 
-	return std::chrono::high_resolution_clock::now() - startTime;
+	return std::chrono::high_resolution_clock::now() - startTime;									// Calculate the elapsed time for the target program and return it.
 }
+
+// Number to string conversion functions.
 
 #define ELAPSED_TIME_STRING_SIZE 128
 
-// NOTE: type (&name)[size] is the syntax for an array reference, which is super useful in some cases. Why? Because it enforces the size of the array at compile-time. So you can't pass anything into the function except an array of the correct size. Compiler has no way of checking this properly if you use pointers, which means those aren't allowed either, which is also useful in some cases.
+// NOTE: type (&name)[size] is the syntax for an array reference, which is super useful in some cases. Why? Because it enforces the size of the array at compile-time. So you can't pass anything into the function except an array of the correct size.
+// NOTE: Compiler has no way of checking this properly if you use pointers, which means those aren't allowed either, which is also useful in some cases.
 void intToString(char (&output)[ELAPSED_TIME_STRING_SIZE], uint64_t value) {
 	// TODO: You should make your own algorithm for doing this. These can get sort of complicated if you tune them to your hardware, but it's a good excersize, you should do it.
-	if (_ui64toa_s(value, output, ELAPSED_TIME_STRING_SIZE, 10) != 0) {					// NOTE: An unsigned int64 can be 20 digits long at maximum, which is why we technically only have to write to the first 21 bytes of the output array (cuz NUL character). The output array is larger because it needs to work with doubleToString as well. We use ELAPSED_TIME_STRING here even though we don't need the full size just in case, and because any slow-down that it might cause isn't noticable and doesn't effect the functionality of the program in any way whatsoever.
-		reportError("failed to convert elapsed time integer to string");
-		exit(EXIT_FAILURE);
+	if (_ui64toa_s(value, output, ELAPSED_TIME_STRING_SIZE, 10) != 0) {					// NOTE: An unsigned int64 can be 20 digits long at maximum, which is why we technically only have to write to the first 21 bytes of the output array (cuz NUL character).
+		reportError("failed to convert elapsed time integer to string");				// NOTE: The output array is larger because it needs to work with doubleToString as well. We use ELAPSED_TIME_STRING here even though we don't need the full size just in case,
+		exit(EXIT_FAILURE);																// and because any slow-down that it might cause isn't noticable and doesn't effect the functionality of the program in any way whatsoever.
 	}
 }
 
@@ -250,7 +257,7 @@ void manageArgs(int argc, const char* const * argv) {
 		isErrorColored = forcedErrorColoring;																		// If everything went great with parsing the cmdline args, finally set output coloring to what the user wants it to be. It is necessary to do this here because of the garantee that we wrote above.
 		std::chrono::nanoseconds elapsedTime = runChildProcess(targetProgramArgCount, argv + targetProgramIndex);
 		char elapsedTimeString[ELAPSED_TIME_STRING_SIZE];
-		switch (flags::timeUnit) {
+		switch (flags::timeUnit) {																					// Make sure we output the elapsed time in the unit that the user wants.
 		case 0:
 			if (flags::timeAccuracy) { intToString(elapsedTimeString, std::chrono::duration_cast<std::chrono::duration<uint64_t, std::nano>>(elapsedTime).count()); break; }
 			doubleToString(elapsedTimeString, std::chrono::duration_cast<std::chrono::duration<double, std::nano>>(elapsedTime).count()); break;
@@ -281,7 +288,7 @@ int main(int argc, char* const * argv) {
 	signal(SIGINT, signalHandler);																							// These two lines make it so that the program ignores both SIGINT and SIGBREAK signals as best as possible. SIGBREAK can only be ignored for 5 seconds, but that's actually good.
 	signal(SIGBREAK, signalHandler);
 
-	if (_isatty(STDERR_FILENO)) {
+	if (_isatty(STDERR_FILENO)) {																							// If stderr is connected to a tty, we need to enable ANSI escape codes so that we can output error messages in color. We also set a pair of flags so the rest of the program knows about the tty-status.
 		HANDLE stdErrHandle = GetStdHandle(STD_ERROR_HANDLE);
 		if (!stdErrHandle || stdErrHandle == INVALID_HANDLE_VALUE) { goto ANSISetupFailure; }
 		DWORD mode;
@@ -294,6 +301,4 @@ int main(int argc, char* const * argv) {
 	else { ANSISetupFailure: isErrorColored = false; forcedErrorColoring = false; }
 
 	manageArgs(argc, argv);
-
-	return 0;
 }
