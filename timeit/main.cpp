@@ -241,7 +241,7 @@ void intToString(char (&output)[ELAPSED_TIME_STRING_SIZE], uint64_t value) {
 }
 
 void doubleToString(char (&output)[ELAPSED_TIME_STRING_SIZE], double value) {
-	if (sprintf_s(output, ELAPSED_TIME_STRING_SIZE, "%f", value) == -1) {				// TODO: What is the minimum size required for the buffer for this to never overflow ever?
+	if (sprintf_s(output, ELAPSED_TIME_STRING_SIZE, "%f", value) == -1) {				// NOTE: The buffer should be large enough for this never to overflow. Even if it isn't, sprintf_s will return -1 before it causes any sort of overflow, since it's a safe function.
 		reportError("failed to convert elapsed time double to string");
 		exit(EXIT_FAILURE);
 	}
