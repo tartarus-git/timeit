@@ -22,9 +22,6 @@
 #define ANSI_ESC_CODE_SUFFIX "m"
 #define ANSI_ESC_CODE_MIN_SIZE ((sizeof(ANSI_ESC_CODE_PREFIX) - 1) + (sizeof(ANSI_ESC_CODE_SUFFIX) - 1))
 
-#define ANSI_RED_CODE_LENGTH ANSI_ESC_CODE_MIN_SIZE + 2
-#define ANSI_RESET_CODE_LENGTH ANSI_ESC_CODE_MIN_SIZE + 1
-
 // NOTE: The difference between const char[] and const char* is that const char* is stored in .rodata and const char[] is stored in .data. That means you can edit this help text at runtime even though it's const.
 const char helpText[] = "timeit runs the specified program with the specified arguments and prints the elapsed time until program completion to stderr. Standard input/output/error all flow through the encapsulating timeit process to and from the target program, allowing " \
 							"the construct to be used seamlessly within piped chains of programs.\n" \
@@ -47,15 +44,8 @@ bool isErrorColored;
 
 // Text coloring, this is only used for error messages in the case of this program.
 namespace color {
-	char* red;
-	void initRed() { red = new char[ANSI_RED_CODE_LENGTH]; memcpy(red, ANSI_ESC_CODE_PREFIX "31" ANSI_ESC_CODE_SUFFIX, ANSI_RED_CODE_LENGTH); }
-
-	char* reset;
-	void initReset() { reset = new char[ANSI_RESET_CODE_LENGTH]; memcpy(reset, ANSI_ESC_CODE_PREFIX "0" ANSI_ESC_CODE_SUFFIX, ANSI_RESET_CODE_LENGTH); }
-
-	void initErrorColoring() { initRed(); initReset(); return; }
-
-	void release() { delete[] color::red; delete[] color::reset; }
+	const char* const red = ANSI_ESC_CODE_PREFIX "31" ANSI_ESC_CODE_SUFFIX;
+	const char* const reset = ANSI_ESC_CODE_PREFIX "0" ANSI_ESC_CODE_SUFFIX;
 }
 
 // Some of the command-line flags that one can set. The rest don't require global variables, so they're not in here.
@@ -70,26 +60,34 @@ namespace flags {
 // NOTE: I think the below note is useful, so I'm going to keep the whole line in even though it currently has nothing to do with the codebase anymore.
 //std::mutex reportError_mutex;	// NOTE: I know you want to destruct this mutex explicitly because the code looks better (arguable in this case), but the mutex class literally doesn't have any sort of release function, and calling the destructor directly is a terrible idea because then it'll probably get destructed twice.
 
+#define static_strlen(x) (sizeof(x) - 1)
+
 // This function makes it easy to report errors. It handles the coloring for you, as well as the formatting of the error string.
 template <size_t N>
-void reportError(const char (&msg)[N]) {
-	if (isErrorColored) {
-		color::initErrorColoring();
-		char buffer[ANSI_RED_CODE_LENGTH + sizeof("ERROR: ") - 1 + N - 1 + 1 + ANSI_RESET_CODE_LENGTH];							// NOTE: This code block is to create our own specific buffering for these substrings, to avoid syscalls and make the whole thing as efficient as possible.
-		memcpy(buffer, color::red, ANSI_RED_CODE_LENGTH);																		// NOTE: Technically, it would be more efficient to write "ERROR: " in every error message individually, but that probably means the executable is larger because of the extra .rodata data, which is undesirable.
-		memcpy(buffer + ANSI_RED_CODE_LENGTH, "ERROR: ", sizeof("ERROR: ") - 1);
-		memcpy(buffer + ANSI_RED_CODE_LENGTH + sizeof("ERROR: ") - 1, msg, N - 1);
-		buffer[ANSI_RED_CODE_LENGTH + sizeof("ERROR: ") - 1 + N - 1] = '\n';
-		memcpy(buffer + ANSI_RED_CODE_LENGTH + sizeof("ERROR: ") - 1 + N - 1 + 1, color::reset, ANSI_RESET_CODE_LENGTH);
+void reportError(const char (&msg)[N]) {				// NOTE: Technically, it would be more efficient to store completed, colored and uncolored versions of the full error texts as const chars, and that is totally possible with cool preprocessor and template tricks, but it isn't useful or necessary. It's actually harmful honestly.
+	if (isErrorColored) {								// NOTE: Having the error strings split up into coloring, ERROR: tag, and message like this, allows the final ELF to store less .rodata in total. The opposite choice, making the error messages faster, is useless, who cares if the error messages are a little tiny bit faster.
+		// Construct appropriately sized buffer.
+		char buffer[static_strlen(color::red) + static_strlen("ERROR: ") + N - 1 + static_strlen(color::reset) + 1];
+
+		// Copy all the necessary data to the buffer. This would be easier and more efficient if C++ let us do >> color::red "ERROR: " << like it lets us do for string literals.
+		memcpy(buffer, color::red, static_strlen(color::red));
+		memcpy(buffer + static_strlen(color::red), "ERROR: ", static_strlen("ERROR: "));
+		memcpy(buffer + static_strlen(color::red) + static_strlen("ERROR: "), msg, N - 1);
+		memcpy(buffer + static_strlen(color::red) + static_strlen("ERROR: ") + N - 1, color::reset, static_strlen(color::reset));
+
+		// Add a newline to the end.
+		buffer[static_strlen(color::red) + static_strlen("ERROR: ") + N - 1 + static_strlen(color::reset)] = '\n';
+
+		// Output the buffer to sterr.
 		_write(STDERR_FILENO, buffer, sizeof(buffer));
-		color::release();
 		return;
 	}
+	// The uncolored version of the above code.
 	char buffer[sizeof("ERROR: ") - 1 + N - 1 + 1];
 	memcpy(buffer, "ERROR: ", sizeof("ERROR: ") - 1);
 	memcpy(buffer + sizeof("ERROR: ") - 1, msg, N - 1);
 	buffer[sizeof("ERROR: ") - 1 + N - 1] = '\n';
-	_write(STDERR_FILENO, buffer, sizeof(buffer));				// TODO: Why is this line green. Intellisense mess-up. Somehow, the buffer's bounds aren't right or something, figure out why.
+	_write(STDERR_FILENO, buffer, sizeof(buffer));							// TODO: I can't figure out why intellisense is giving me a warning on this line. I also can't seem to understand the warning message it's giving me, seems pretty messed up to me. Figure this out if you can. Intellisense may just be being dumb.
 }
 
 // NOTE: I have previously only shown help when output is connected to TTY, so as not to pollute stdout when piping. Back then, help was shown sometimes when it wasn't requested, which made it prudent to include that feature. Now, you have to explicitly ask for help, making TTY branching unnecessary.
