@@ -10,7 +10,7 @@
 #include <cstdio>													// Needed for sprintf_s function.
 #include <io.h>														// Needed for _isatty function and _write function.
 
-#include <cstring>													// Needed for strcmp function and strlen function.
+#include <cstring>													// Needed for strcmp function and strlen function and memcpy function.
 #include <string>													// Needed for the one single spot in which we use std::string.
 
 //#define STDIN_FILENO 0
@@ -73,10 +73,10 @@ void reportError(const char (&msg)[N]) {		// NOTE: Technically, it would be more
 		char buffer[static_strlen(color::red) + static_strlen("ERROR: ") + N - 1 + static_strlen(color::reset) + 1];
 
 		// Copy all the necessary data to the buffer. This would be easier and more efficient if C++ let us do >>>> color::red "ERROR: " <<<< like it lets us do for string literals.
-		memcpy(buffer, color::red, static_strlen(color::red));
-		memcpy(buffer + static_strlen(color::red), "ERROR: ", static_strlen("ERROR: "));
-		memcpy(buffer + static_strlen(color::red) + static_strlen("ERROR: "), msg, N - 1);
-		memcpy(buffer + static_strlen(color::red) + static_strlen("ERROR: ") + N - 1, color::reset, static_strlen(color::reset));
+		std::memcpy(buffer, color::red, static_strlen(color::red));
+		std::memcpy(buffer + static_strlen(color::red), "ERROR: ", static_strlen("ERROR: "));											// NOTE: We could use the C-style version here (without sdt::), but this is the "correct" way.
+		std::memcpy(buffer + static_strlen(color::red) + static_strlen("ERROR: "), msg, N - 1);
+		std::memcpy(buffer + static_strlen(color::red) + static_strlen("ERROR: ") + N - 1, color::reset, static_strlen(color::reset));
 
 		// Add a newline to the end.
 		buffer[static_strlen(color::red) + static_strlen("ERROR: ") + N - 1 + static_strlen(color::reset)] = '\n';
@@ -89,8 +89,8 @@ void reportError(const char (&msg)[N]) {		// NOTE: Technically, it would be more
 	// The uncolored version of the above code.
 	char buffer[static_strlen("ERROR: ") + N - 1 + 1];
 
-	memcpy(buffer, "ERROR: ", static_strlen("ERROR: "));
-	memcpy(buffer + static_strlen("ERROR: "), msg, N - 1);
+	std::memcpy(buffer, "ERROR: ", static_strlen("ERROR: "));
+	std::memcpy(buffer + static_strlen("ERROR: "), msg, N - 1);
 
 	buffer[static_strlen("ERROR: ") + N - 1] = '\n';
 
