@@ -1,28 +1,34 @@
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 
-#include <csignal>
+#include <csignal>													// Needed for signal handling.
 
-#include <cstdlib>
+#include <cstdlib>													// Needed for _ui64toa_s (safe conversion function from unsigned int to ascii string)
 
-#include <thread>
-#include <chrono>
+#include <chrono>													// Needed for timing the child process.
 
-#include <io.h>														// Needed for _isatty function.
+#include <cstdio>													// Needed for sprintf_s function.
+#include <io.h>														// Needed for _isatty function and _write function.
 
-#include <cstring>													// Needed for some string manipulation function I think.
-#include <string>													// Needed for one single spot in which we use std::string.
+#include <cstring>													// Needed for strcmp function and strlen function.
+#include <string>													// Needed for the one single spot in which we use std::string.
 
 //#define STDIN_FILENO 0
 #define STDOUT_FILENO 1
 #define STDERR_FILENO 2
 
+#define static_strlen(x) (sizeof(x) - 1)
+
 // ANSI escape code helpers.
 #define ANSI_ESC_CODE_PREFIX "\033["
 #define ANSI_ESC_CODE_SUFFIX "m"
-#define ANSI_ESC_CODE_MIN_SIZE ((sizeof(ANSI_ESC_CODE_PREFIX) - 1) + (sizeof(ANSI_ESC_CODE_SUFFIX) - 1))
+#define ANSI_ESC_CODE_MIN_SIZE (static_strlen(ANSI_ESC_CODE_PREFIX) + static_strlen(ANSI_ESC_CODE_SUFFIX))
 
-// NOTE: The difference between const char[] and const char* is that const char* is stored in .rodata and const char[] is stored in .data. That means you can edit this help text at runtime even though it's const.
+// NOTE: const char[] and const char* are both stored in .rodata (at least usually, C++ standard leaves it open to the implementor). That means this help text is in .rodata (usually).
+// NOTE: You can store strings in .data, which means they will be changeable from runtime. To do that, use char[].
+// SIDE-NOTE: One would think that you could use char* as well as char[] for .data strings. That is false. char* will still point to .rodata memory, making changing the string that resides there UB.
+// REASON: C did it this way, so C++ did it this way as well.
+// BUT: That has been changed, I don't know when, but it's gone now. You have to use const char* for string literals now in C++. You can't use char*, which makes this whole thing much easier to understand.
 const char helpText[] = "timeit runs the specified program with the specified arguments and prints the elapsed time until program completion to stderr. Standard input/output/error all flow through the encapsulating timeit process to and from the target program, allowing " \
 							"the construct to be used seamlessly within piped chains of programs.\n" \
 							"\n" \
@@ -60,16 +66,14 @@ namespace flags {
 // NOTE: I think the below note is useful, so I'm going to keep the whole line in even though it currently has nothing to do with the codebase anymore.
 //std::mutex reportError_mutex;	// NOTE: I know you want to destruct this mutex explicitly because the code looks better (arguable in this case), but the mutex class literally doesn't have any sort of release function, and calling the destructor directly is a terrible idea because then it'll probably get destructed twice.
 
-#define static_strlen(x) (sizeof(x) - 1)
-
 // This function makes it easy to report errors. It handles the coloring for you, as well as the formatting of the error string.
 template <size_t N>
-void reportError(const char (&msg)[N]) {				// NOTE: Technically, it would be more efficient to store completed, colored and uncolored versions of the full error texts as const chars, and that is totally possible with cool preprocessor and template tricks, but it isn't useful or necessary. It's actually harmful honestly.
-	if (isErrorColored) {								// NOTE: Having the error strings split up into coloring, ERROR: tag, and message like this, allows the final ELF to store less .rodata in total. The opposite choice, making the error messages faster, is useless, who cares if the error messages are a little tiny bit faster.
+void reportError(const char (&msg)[N]) {		// NOTE: Technically, it would be more efficient to store completed, colored and uncolored versions of the full error texts as const chars, and that is totally possible with cool preprocessor and template tricks, but it isn't useful or necessary. It's actually harmful honestly.
+	if (isErrorColored) {						// NOTE: Having the error strings split up into coloring, ERROR: tag, and message like this, allows the final ELF to store less .rodata in total. The opposite choice, making the error messages faster, is useless, who cares if the error messages are a little tiny bit faster at expense of memory.
 		// Construct appropriately sized buffer.
 		char buffer[static_strlen(color::red) + static_strlen("ERROR: ") + N - 1 + static_strlen(color::reset) + 1];
 
-		// Copy all the necessary data to the buffer. This would be easier and more efficient if C++ let us do >> color::red "ERROR: " << like it lets us do for string literals.
+		// Copy all the necessary data to the buffer. This would be easier and more efficient if C++ let us do >>>> color::red "ERROR: " <<<< like it lets us do for string literals.
 		memcpy(buffer, color::red, static_strlen(color::red));
 		memcpy(buffer + static_strlen(color::red), "ERROR: ", static_strlen("ERROR: "));
 		memcpy(buffer + static_strlen(color::red) + static_strlen("ERROR: "), msg, N - 1);
@@ -82,17 +86,21 @@ void reportError(const char (&msg)[N]) {				// NOTE: Technically, it would be mo
 		_write(STDERR_FILENO, buffer, sizeof(buffer));
 		return;
 	}
+
 	// The uncolored version of the above code.
-	char buffer[sizeof("ERROR: ") - 1 + N - 1 + 1];
-	memcpy(buffer, "ERROR: ", sizeof("ERROR: ") - 1);
-	memcpy(buffer + sizeof("ERROR: ") - 1, msg, N - 1);
-	buffer[sizeof("ERROR: ") - 1 + N - 1] = '\n';
-	_write(STDERR_FILENO, buffer, sizeof(buffer));							// TODO: I can't figure out why intellisense is giving me a warning on this line. I also can't seem to understand the warning message it's giving me, seems pretty messed up to me. Figure this out if you can. Intellisense may just be being dumb.
+	char buffer[static_strlen("ERROR: ") + N - 1 + 1];
+
+	memcpy(buffer, "ERROR: ", static_strlen("ERROR: "));
+	memcpy(buffer + static_strlen("ERROR: "), msg, N - 1);
+
+	buffer[static_strlen("ERROR: ") + N - 1] = '\n';
+
+	_write(STDERR_FILENO, buffer, sizeof(buffer));										// NOTE: Intellisense is complaining about this line, but PVS-Studio can't find anything. I can't see anything wrong either, so I'm leaving it like this.
 }
 
 // NOTE: I have previously only shown help when output is connected to TTY, so as not to pollute stdout when piping. Back then, help was shown sometimes when it wasn't requested, which made it prudent to include that feature. Now, you have to explicitly ask for help, making TTY branching unnecessary.
 void showHelp() {
-	if (_write(STDOUT_FILENO, helpText, sizeof(helpText) - 1) == -1) {			// NOTE: It's ok to use unbuffered IO here because we always exit after writing this, no point in buffering.
+	if (_write(STDOUT_FILENO, helpText, static_strlen(helpText)) == -1) {				// NOTE: It's ok to use unbuffered IO here because we always exit after writing this, no point in buffering.
 		reportError("failed to write help text to stdout");
 		exit(EXIT_FAILURE);
 	}
@@ -102,7 +110,7 @@ void showHelp() {
 bool forcedErrorColoring;					// NOTE: GARANTEE: If something goes wrong while parsing the cmdline args and an error message is necessary, the error message will always be printed with the default coloring (based on TTY/piped mode).
 
 // Parse flags at the argument level. Calls parseFlagGroup if it encounters flag groups and handles word flags (those with -- in front) separately.
-unsigned int parseFlags(int argc, const char* const * argv) {																// NOTE: If you write --context twice or --color twice (or any additional flags that we may add), the value supplied to the rightmost instance will be the value that is used. Does not throw an error.
+unsigned int parseFlags(int argc, const char* const * argv) {																// NOTE: If you write --error-color, --unit, etc... twice, the value supplied to the rightmost instance will be the value that is used. Does not throw an error.
 	for (int i = 1; i < argc; i++) {
 		const char* arg = argv[i];
 		if (arg[0] == '-') {
@@ -139,7 +147,7 @@ unsigned int parseFlags(int argc, const char* const * argv) {																// 
 					i++;
 					if (i == argc) { reportError("the --accuracy flag was not supplied with a value"); exit(EXIT_SUCCESS); }
 
-					if (!strcmp(argv[i], "double")) { flags::timeAccuracy = false; continue; }				// NOTE: This might seem unnecessary, but we need it in case the --accuracy flag is used twice and has already changed the value.
+					if (!strcmp(argv[i], "double")) { flags::timeAccuracy = false; continue; }								// NOTE: This might seem unnecessary, but (as stated above already) we need it in case the --accuracy flag is used twice and has already changed the value.
 					if (!strcmp(argv[i], "int")) { flags::timeAccuracy = true; continue; }
 					reportError("invalid value for --accuracy flag"); exit(EXIT_SUCCESS);
 				}
@@ -158,7 +166,7 @@ unsigned int parseFlags(int argc, const char* const * argv) {																// 
 
 void signalHandler(int signum) { }						// NOTE: This is supposed to be empty. At no point in our program's execution do we ever need to react to a signal being sent, so the only function of this line is to stop specific signals from stopping our program and instead make them give us time.
 
-// This function is responsible for actually running the program which is to be timed. The program is run as a child process of this program. It is given our stdout, stdin and stderr handles and it is able to freely interact with the console and the user.
+// This function is responsible for actually running the program which is to be timed. The program is run as a child process of this program. It is given our stdout, stdin and stderr handles and it is able to freely interact with the console and the user, or with pipes, should some be set up.
 std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 	// NOTE: I thought this was impossible, but apparently it isn't, so we have to check for it and report an error if it occurs.
 	// NOTE: The reason we don't just let CreateProcessA detect this error is because it will probably just filter out the nothingness and use the first argument as the program name, which is very terrible.
@@ -167,10 +175,10 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 
 	// Fill a buffer with the required command-line to invoke the target program with all the specified arguments.
 	std::string buffer;
-	buffer += '\"';		// IMPORTANT NOTE: These are super necessary because you wouldn't otherwise be able to run programs that have names with spaces in them. Even worse, you could accidentally run a completely different program than the one you wanted, which is terrible behaviour. That is why we add the quotes, to prevent against those two things.
+	buffer += '\"';	// IMPORTANT NOTE: These are super necessary because you wouldn't otherwise be able to run programs that have names with spaces in them. Even worse, you could accidentally run a completely different program than the one you wanted, which is terrible behaviour. That is why we add the quotes, to prevent against those two things.
 	buffer += argv[0];
 	buffer += "\" ";
-	if (flags::expandArgs) {						// NOTE: The difference in behviour here is achieved by adding quotes around the arguments. When quotes are present, arguments with spaces are still considered as one argument. Without quotes, the given arguments will be split up into many arguments when CreateProcessA creates the child process.
+	if (flags::expandArgs) {					// NOTE: The difference in behviour here is achieved by adding quotes around the arguments. When quotes are present, arguments with spaces are still considered as one argument. Without quotes, the given arguments will be split up into many arguments when CreateProcessA creates the child process.
 		for (int i = 1; i < argc; i++) {
 			buffer += argv[i];
 			buffer += ' ';
@@ -184,7 +192,7 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 		}
 	}
 
-	PROCESS_INFORMATION procInfo;				// NOTE: No need to set the fields to zero, since this is only for getting data out from CreateProcessA. The OS fills these, we don't need to zero them out.
+	PROCESS_INFORMATION procInfo;							// NOTE: No need to set the fields to zero, since this is only for getting data out from CreateProcessA. The OS fills these, we don't need to zero them out.
 
 	STARTUPINFOA startupInfo = { };							// We could fill this struct with information about how exactly the target program is to be started, which permissions it has, etc..., but all that is unnecessary for this application, so we just zero everything out and set the mandatory cb field.
 	startupInfo.cb = sizeof(STARTUPINFOA);
@@ -194,7 +202,7 @@ std::chrono::nanoseconds runChildProcess(int argc, const char* const * argv) {
 	// Finally actually create the child process.
 	// IMPORTANT NOTE: We have to use buffer.data() instead of buffer.c_str() because data() returns a modifiable c-string, which is necessary for CreateProcessA. The deal is that you're allowed to modify everything except the trailing NUL character, doing so would be UB.
 	// CreateProcessA almost definitely won't change the NUL character because why should it, and it won't change the c-string pointer because it just accepts a copy, meaning it literally can't. So the only thing it can really change is the meat of the c-string, which we don't care about.
-	// Also, I think (if I'm reading them right) the docs sat that CreateProcessW is the one that changes the string, not CreateProcessA, so we should be safe anyway. Strange that the argument isn't marked with const in CreateProcessA then.
+	// Also, I think (if I'm reading them right) the docs said that CreateProcessW is the one that changes the string, not CreateProcessA, so we should be safe anyway. Strange that the argument isn't marked with const in CreateProcessA then.
 	if (!CreateProcessA(nullptr, buffer.data(), nullptr, nullptr, false, 0, nullptr, nullptr, &startupInfo, &procInfo)) {
 		reportError("couldn't start target program");				// NOTE: Sadly, the win32 docs don't really specify the possible error codes for CreateProcessA, so I don't know which cases to check for here. This generic error message will have to do.
 		exit(EXIT_SUCCESS);											// NOTE: The majority of errors in this spot are probably going to be caused by misspellings of the target program by the user, so we use EXIT_SUCCESS here.
@@ -275,7 +283,7 @@ void manageArgs(int argc, const char* const * argv) {
 			if (flags::timeAccuracy) { intToString(elapsedTimeString, std::chrono::duration_cast<std::chrono::duration<uint64_t, std::ratio<3600, 1>>>(elapsedTime).count()); break; }
 			doubleToString(elapsedTimeString, std::chrono::duration_cast<std::chrono::duration<double, std::ratio<3600, 1>>>(elapsedTime).count()); break;
 		}
-		if (_write(STDERR_FILENO, elapsedTimeString, strlen(elapsedTimeString)) == -1) {					// NOTE: AFAIK, there is no syscall available that takes in a null-terminated string for writing. Thus, we are forced to measure the string and use the standard _write syscall.
+		if (_write(STDERR_FILENO, elapsedTimeString, strlen(elapsedTimeString)) == -1) {							// NOTE: AFAIK, there is no syscall available that takes in a null-terminated string for writing. Thus, we are forced to measure the string and use the standard _write syscall.
 			reportError("failed to write elapsed time to parent stderr");
 			exit(EXIT_FAILURE);
 		}
