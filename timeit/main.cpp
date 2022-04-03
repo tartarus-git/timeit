@@ -22,7 +22,6 @@
 // ANSI escape code helpers.
 #define ANSI_ESC_CODE_PREFIX "\033["
 #define ANSI_ESC_CODE_SUFFIX "m"
-#define ANSI_ESC_CODE_MIN_SIZE (static_strlen(ANSI_ESC_CODE_PREFIX) + static_strlen(ANSI_ESC_CODE_SUFFIX))
 
 // NOTE: const char[] and const char* are both stored in .rodata (at least usually, C++ standard leaves it open to the implementor). That means this help text is in .rodata (usually).
 // NOTE: You can store strings in .data, which means they will be changeable from runtime. To do that, use char[].
@@ -50,8 +49,8 @@ bool isErrorColored;
 
 // Text coloring, this is only used for error messages in the case of this program.
 namespace color {
-	const char* const red = ANSI_ESC_CODE_PREFIX "31" ANSI_ESC_CODE_SUFFIX;
-	const char* const reset = ANSI_ESC_CODE_PREFIX "0" ANSI_ESC_CODE_SUFFIX;
+	const char red[] = ANSI_ESC_CODE_PREFIX "31" ANSI_ESC_CODE_SUFFIX;
+	const char reset[] = ANSI_ESC_CODE_PREFIX "0" ANSI_ESC_CODE_SUFFIX;
 }
 
 // Some of the command-line flags that one can set. The rest don't require global variables, so they're not in here.
