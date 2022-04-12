@@ -30,7 +30,7 @@
 // BUT: That has been changed, I don't know when, but it's gone now. You have to use const char* for string literals now in C++. You can't use char*, which makes this whole thing much easier to understand.
 const char helpText[] = "timeit runs the specified program with the specified arguments and prints the elapsed time until program completion to stderr. Standard input/output/error all flow through the encapsulating timeit process to and from the target program, allowing " \
 							"the construct to be used seamlessly within piped chains of programs.\n" \
-							"\n" \
+							"\n" \				// TODO: Change <> to [] for the arguments part of the help text, since that isn't strictly necessary.
 							"usage: timeit [--expand-args || --error-color <auto|on|off> || --unit <nanoseconds|microseconds|milliseconds|seconds|minutes|hours> || --accuracy <double|int>] <program> <arguments>...\n" \
 							"       timeit <--help || --h>            -->            shows help text\n" \
 							"\n" \
@@ -108,6 +108,7 @@ void showHelp() {
 // This variable keeps track of the error coloring that the user requested from the command-line.
 bool forcedErrorColoring;					// NOTE: GARANTEE: If something goes wrong while parsing the cmdline args and an error message is necessary, the error message will always be printed with the default coloring (based on TTY/piped mode).
 
+// TODO: The below comment is outdated, rewrite a small portion of it.
 // Parse flags at the argument level. Calls parseFlagGroup if it encounters flag groups and handles word flags (those with -- in front) separately.
 unsigned int parseFlags(int argc, const char* const * argv) {																// NOTE: If you write --error-color, --unit, etc... twice, the value supplied to the rightmost instance will be the value that is used. Does not throw an error.
 	for (int i = 1; i < argc; i++) {
@@ -154,7 +155,7 @@ unsigned int parseFlags(int argc, const char* const * argv) {																// 
 				if (!strcmp(flagTextStart, "help")) { showHelp(); exit(EXIT_SUCCESS); }
 				if (!strcmp(flagTextStart, "h")) { showHelp(); exit(EXIT_SUCCESS); }
 
-				// NOTE: Usually, I would report an error here, but since there are no valid flags with single "-", and since the following error handling code is very applicable to this case as well, we can just fall through to the following error handling code and everything is a-okay.
+				// NOTE: Usually, I would report an error here, but since there are no valid flags with single "-", and since the following error message is very applicable to this case as well, we can just fall through to the following error handling code and everything is a-okay.
 			}
 			reportError("one or more flag arguments are invalid"); exit(EXIT_SUCCESS);
 		}
