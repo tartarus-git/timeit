@@ -283,6 +283,7 @@ void manageArgs(int argc, const char* const * argv) {
 			if (flags::timeAccuracy) { intToString(elapsedTimeString, std::chrono::duration_cast<std::chrono::duration<uint64_t, std::ratio<3600, 1>>>(elapsedTime).count()); break; }
 			doubleToString(elapsedTimeString, std::chrono::duration_cast<std::chrono::duration<double, std::ratio<3600, 1>>>(elapsedTime).count()); break;
 		}
+		// TODO: Write newline at the end of the time report. You can do this by simply doing elapedTimeString[strlen(elapsedTimeString)] = '\n' I believe.
 		if (_write(STDERR_FILENO, elapsedTimeString, strlen(elapsedTimeString)) == -1) {							// NOTE: AFAIK, there is no syscall available that takes in a null-terminated string for writing. Thus, we are forced to measure the string and use the standard _write syscall.
 			reportError("failed to write elapsed time to parent stderr");
 			exit(EXIT_FAILURE);
