@@ -3,7 +3,7 @@
 
 #include <csignal>													// Needed for signal handling.
 
-#include <cstdlib>													// Needed for _ui64toa_s (safe conversion function from unsigned int to ascii string)
+#include <cstdlib>													// Needed for _ui64toa_s (safe conversion function from unsigned int to ascii string) and exit function.
 
 #include <chrono>													// Needed for timing the child process.
 
@@ -28,19 +28,25 @@
 // SIDE-NOTE: One would think that you could use char* as well as char[] for .data strings. That is false. char* will still point to .rodata memory, making changing the string that resides there UB.
 // REASON: C did it this way, so C++ did it this way as well.
 // BUT: That has been changed, I don't know when, but it's gone now. You have to use const char* for string literals now in C++. You can't use char*, which makes this whole thing much easier to understand.
-const char helpText[] = "timeit runs the specified program with the specified arguments and prints the elapsed time until program completion to stderr. Standard input/output/error all flow through the encapsulating timeit process to and from the target program, allowing " \
+const char helpText[] = "timeit runs the specified program with the specified arguments and prints the elapsed time until program completion to stderr.\n" \
+							"Standard input/output/error all flow through the encapsulating timeit process to and from the target program, allowing \n" \
 							"the construct to be used seamlessly within piped chains of programs.\n" \
-							"\n" \				// TODO: Change <> to [] for the arguments part of the help text, since that isn't strictly necessary.
-							"usage: timeit [--expand-args || --error-color <auto|on|off> || --unit <nanoseconds|microseconds|milliseconds|seconds|minutes|hours> || --accuracy <double|int>] <program> <arguments>...\n" \
+							"\n" \
+							"usage: timeit [--expand-args || --error-color <auto|on|off> ||\n" \
+							"           --unit <nanoseconds | microseconds | milliseconds | seconds | minutes | hours> || --accuracy <double | int>]\n" \
+							"           <program> [arguments]...\n" \
 							"       timeit <--help || --h>            -->            shows help text\n" \
 							"\n" \
 							"arguments:\n" \
-								"\t--expand-args                 -->                  expand elements of <arguments>... that contain spaces into multiple arguments (default behaviour is to leave them as single arguments)\n" \
-								"\t--error-color <auto|on|off>   -->                  force a specific coloring behaviour for error messages (which are always printed to stderr) (default behaviour is auto)\n" \
+								"\t--expand-args                 -->                  expand elements of [arguments]... that contain spaces into\n" \
+								"\t                                                   multiple arguments (default behaviour is to leave them as single arguments)\n" \
+								"\t--error-color <auto|on|off>   -->                  force a specific coloring behaviour for error messages \n" \
+								"\t                                                   (which are always printed to stderr) (default behaviour is auto)\n" \
 								"\t--unit <(see above)>          -->                  the unit to output the elapsed time in (default is seconds)\n" \
-								"\t--accuracy <double|int>       -->                  specify whether elapsed time is outputted as a decimal (double) or as a round number (int) (default is double)\n" \
+								"\t--accuracy <double|int>       -->                  specify whether elapsed time is outputted as a decimal (double)\n" \
+								"\t                                                   or as a round number (int) (default is double)\n" \
 								"\t<program>                     -->                  the program which is to be timed\n" \
-								"\t<arguments>...                -->                  the arguments to pass to the target program\n" \
+								"\t[arguments]...                -->                  the arguments to pass to the target program\n" \
 							"\n" \
 							"NOTE: It is possible to specify a flag more than once. If this is the case, only the last occurrence will influence program behaviour.\n";
 
@@ -108,8 +114,7 @@ void showHelp() {
 // This variable keeps track of the error coloring that the user requested from the command-line.
 bool forcedErrorColoring;					// NOTE: GARANTEE: If something goes wrong while parsing the cmdline args and an error message is necessary, the error message will always be printed with the default coloring (based on TTY/piped mode).
 
-// TODO: The below comment is outdated, rewrite a small portion of it.
-// Parse flags at the argument level. Calls parseFlagGroup if it encounters flag groups and handles word flags (those with -- in front) separately.
+// Parse flag arguments. Only handles word flags (those with -- in front), since we don't have any single letter flags (those with - in front).
 unsigned int parseFlags(int argc, const char* const * argv) {																// NOTE: If you write --error-color, --unit, etc... twice, the value supplied to the rightmost instance will be the value that is used. Does not throw an error.
 	for (int i = 1; i < argc; i++) {
 		const char* arg = argv[i];
@@ -261,7 +266,9 @@ void manageArgs(int argc, const char* const * argv) {
 		reportError("too few arguments"); exit(EXIT_SUCCESS);
 	default:
 		isErrorColored = forcedErrorColoring;																		// If everything went great with parsing the cmdline args, finally set output coloring to what the user wants it to be. It is necessary to do this here because of the garantee that we wrote above.
+
 		std::chrono::nanoseconds elapsedTime = runChildProcess(targetProgramArgCount, argv + targetProgramIndex);
+
 		char elapsedTimeString[ELAPSED_TIME_STRING_SIZE];
 		switch (flags::timeUnit) {																					// Make sure we output the elapsed time in the unit that the user wants.
 		case 0:
@@ -283,8 +290,10 @@ void manageArgs(int argc, const char* const * argv) {
 			if (flags::timeAccuracy) { intToString(elapsedTimeString, std::chrono::duration_cast<std::chrono::duration<uint64_t, std::ratio<3600, 1>>>(elapsedTime).count()); break; }
 			doubleToString(elapsedTimeString, std::chrono::duration_cast<std::chrono::duration<double, std::ratio<3600, 1>>>(elapsedTime).count()); break;
 		}
-		// TODO: Write newline at the end of the time report. You can do this by simply doing elapedTimeString[strlen(elapsedTimeString)] = '\n' I believe.
-		if (_write(STDERR_FILENO, elapsedTimeString, strlen(elapsedTimeString)) == -1) {							// NOTE: AFAIK, there is no syscall available that takes in a null-terminated string for writing. Thus, we are forced to measure the string and use the standard _write syscall.
+
+		size_t elapsedTimeStringLength = strlen(elapsedTimeString);
+		elapsedTimeString[elapsedTimeStringLength] = '\n';															// Replace NUL termination character with newline. We don't need the NUL character anyway, so it's totally fine.
+		if (_write(STDERR_FILENO, elapsedTimeString, elapsedTimeStringLength + 1) == -1) {
 			reportError("failed to write elapsed time to parent stderr");
 			exit(EXIT_FAILURE);
 		}
