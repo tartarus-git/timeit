@@ -4,7 +4,6 @@
 #include <csignal>													// Needed for signal handling.
 
 #include <cstdlib>													// Needed for _ui64toa_s (safe conversion function from unsigned int to ascii string) and exit function.
-																	// TODO: You really could do this yourself and save yourself the include.
 
 #include <chrono>													// Needed for timing the child process.
 
@@ -78,41 +77,50 @@ namespace flags {
 // NOTE: I think the below note is useful, so I'm going to keep the whole line in even though it currently has nothing to do with the codebase anymore.
 //std::mutex reportError_mutex;	// NOTE: I know you want to destruct this mutex explicitly because the code looks better (arguable in this case), but the mutex class literally doesn't have any sort of release function, and calling the destructor directly is a terrible idea because then it'll probably get destructed twice.
 
+constexpr char error_preamble[] = "timeit: ERROR: ";
+
+namespace strlens {
+	constexpr size_t error = static_strlen(error_preamble);
+	constexpr size_t red = static_strlen(color::red);
+	constexpr size_t reset = static_strlen(color::reset);
+}
+
 // This function makes it easy to report errors. It handles the coloring for you, as well as the formatting of the error string.
 template <size_t N>
-void reportError(const char (&msg)[N]) {		// NOTE: Technically, it would be more efficient to store completed, colored and uncolored versions of the full error texts as const chars, and that is totally possible with cool preprocessor and template tricks, but it isn't useful or necessary. It's actually harmful honestly.
-	if (isErrorColored) {						// NOTE: Having the error strings split up into coloring, ERROR: tag, and message like this, allows the final ELF to store less .rodata in total. The opposite choice, making the error messages faster, is useless, who cares if the error messages are a little tiny bit faster at expense of memory.
+void reportError(const char (&msg)[N]) noexcept {	// NOTE: Technically, it would be more efficient to store completed, colored and uncolored versions of the full error texts as const chars, and that is totally possible with cool preprocessor and template tricks, but it isn't useful or necessary. It's actually harmful honestly.
+	if (isErrorColored) {							// NOTE: Having the error strings split up into coloring, ERROR: tag, and message like this, allows the final ELF to store less .rodata in total. The opposite choice, making the error messages faster, is useless, who cares if the error messages are a little tiny bit faster at expense of memory.
 		// Construct appropriately sized buffer.
-		char buffer[static_strlen(color::red) + static_strlen("ERROR: ") + N - 1 + static_strlen(color::reset) + 1];
+		char buffer[strlens::red + strlens::error + N - 1 + strlens::reset + 1];
 
 		// Copy all the necessary data to the buffer. This would be easier and more efficient if C++ let us do >>>> color::red "ERROR: " <<<< like it lets us do for string literals.
 		// It doesn't though, which isn't so bad to be honest. I mean as stated above, doing this at compile-time would yield larger file sizes anyway, so I'm going to let it slide this time.
 		// NOTE: Even if the char arrays are constexpr, it doesn't, simply because the language spec says so. I'm sure you could implement that behavior if you wanted to.
-		std::memcpy(buffer, color::red, static_strlen(color::red));
-		std::memcpy(buffer + static_strlen(color::red), "ERROR: ", static_strlen("ERROR: "));											// NOTE: We could use the C-style version here (without std::), but this is the "correct" way.
-		std::memcpy(buffer + static_strlen(color::red) + static_strlen("ERROR: "), msg, N - 1);
-		std::memcpy(buffer + static_strlen(color::red) + static_strlen("ERROR: ") + N - 1, color::reset, static_strlen(color::reset));
+		std::memcpy(buffer, color::red, strlens::red);
+		std::memcpy(buffer + strlens::red, error_preamble, strlens::error);											// NOTE: We could use the C-style version here (without std::), but this is the "correct" way.
+		std::memcpy(buffer + strlens::red + strlens::error, msg, N - 1);
+		std::memcpy(buffer + strlens::red + strlens::error + N - 1, color::reset, strlens::reset);
 
 		// Add a newline to the end.
-		buffer[static_strlen(color::red) + static_strlen("ERROR: ") + N - 1 + static_strlen(color::reset)] = '\n';
+		buffer[strlens::red + strlens::error + N - 1 + strlens::reset] = '\n';
 
 		_write(STDERR_FILENO, buffer, sizeof(buffer));					// NOTE: No error handling because if outputting errors fails, how are we going to output this new error? We can't. We just try our best to get the main error out before the program terminates.
+
 		return;
 	}
 
 	// The uncolored version of the above code.
-	char buffer[static_strlen("ERROR: ") + N - 1 + 1];
+	char buffer[strlens::error + N - 1 + 1];
 
-	std::memcpy(buffer, "ERROR: ", static_strlen("ERROR: "));
-	std::memcpy(buffer + static_strlen("ERROR: "), msg, N - 1);
+	std::memcpy(buffer, error_preamble, strlens::error);
+	std::memcpy(buffer + strlens::error, msg, N - 1);
 
-	buffer[static_strlen("ERROR: ") + N - 1] = '\n';
+	buffer[strlens::error + N - 1] = '\n';
 
 	_write(STDERR_FILENO, buffer, sizeof(buffer));						// NOTE: Intellisense is complaining about this line, but PVS-Studio can't find anything. I can't see anything wrong either, so I'm leaving it like this.
 }
 
 // NOTE: I have previously only shown help when output is connected to TTY, so as not to pollute stdout when piping. Back then, help was shown sometimes when it wasn't requested, which made it prudent to include that feature. Now, you have to explicitly ask for help, making TTY branching unnecessary.
-void showHelp() {
+void showHelp() noexcept {
 	if (_write(STDOUT_FILENO, helpText, static_strlen(helpText)) == -1) {				// NOTE: It's ok to use unbuffered IO here because we always exit after writing this, no point in buffering.
 		reportError("failed to write help text to stdout");
 		std::exit(EXIT_FAILURE);
@@ -120,10 +128,10 @@ void showHelp() {
 }
 
 // This variable keeps track of the error coloring that the user requested from the command-line.
-bool forcedErrorColoring;					// NOTE: GARANTEE: If something goes wrong while parsing the cmdline args and an error message is necessary, the error message will always be printed with the default coloring (based on TTY/piped mode).
+bool forcedErrorColoring;					// NOTE: GUARANTEE: If something goes wrong while parsing the cmdline args and an error message is necessary, the error message will always be printed with the default coloring (based on TTY/piped mode).
 
 // Parse flag arguments. Only handles word flags (those with -- in front), since we don't have any single letter flags (those with - in front).
-unsigned int parseFlags(int argc, const char* const * argv) {											// NOTE: If you write --error-color, --unit, etc... twice, the value supplied to the rightmost instance will be the value that is used. Does not throw an error.
+unsigned int parseFlags(int argc, const char* const * argv) noexcept {											// NOTE: If you write --error-color, --unit, etc... twice, the value supplied to the rightmost instance will be the value that is used. Does not throw an error.
 	for (int i = 1; i < argc; i++) {
 		const char* arg = argv[i];
 		if (arg[0] == '-') {
@@ -178,10 +186,46 @@ unsigned int parseFlags(int argc, const char* const * argv) {											// NOTE:
 	return argc;																									// No non-flag argument was found. Return argc because it works nicely with calling code.
 }
 
-void signalHandler(int signum) { }						// NOTE: This is supposed to be empty. At no point in our program's execution do we ever need to react to a signal being sent, so the only function of this line is to stop specific signals from stopping our program and instead make them give us time.
+void signalHandler(int signum) noexcept { }						// NOTE: This is supposed to be empty. At no point in our program's execution do we ever need to react to a signal being sent, so the only function of this line is to stop specific signals from stopping our program and instead make them give us time.
+
+void prevent_injection(std::string& buffer, const char *argument) noexcept {
+	const char *original_arg_ptr = argument;
+	size_t backslash_count = 0;
+
+	for (; *argument != '\0'; argument++) {
+begin_for_loop_body:
+		switch (*argument) {
+		case '\\': backslash_count++; continue;
+		default: backslash_count = 0; continue;
+		case '"':
+			const size_t buffer_length = buffer.length();
+			const size_t copy_length = argument - original_arg_ptr;
+
+			buffer.resize(buffer_length + copy_length + backslash_count + 2);
+			// TODO: This resize function fills new data with 0. Find a way to leave it uninitialized. Make your own string class?
+
+			char *starting_ptr = buffer.data() + buffer_length;
+			std::memcpy(starting_ptr, original_arg_ptr, copy_length);
+
+			starting_ptr += copy_length;
+			char* ptr = starting_ptr;
+			for (; ptr < starting_ptr + backslash_count; ptr++) { *ptr = '\\'; }
+
+			*(ptr++) = '\\';
+			*ptr = '"';
+
+			if (*(++argument) == '\0') { return; }
+			original_arg_ptr = argument;
+			backslash_count = 0;
+			goto begin_for_loop_body;
+		}
+	}
+
+	buffer.append(original_arg_ptr, argument - original_arg_ptr);
+}
 
 // This function is responsible for actually running the program which is to be timed. The program is run as a child process of this program. It is given our stdout, stdin and stderr handles and it is able to freely interact with the console and the user, or with pipes, should some be set up.
-std::pair<std::chrono::nanoseconds, int> runChildProcess(int argc, const char* const * argv) {
+std::pair<std::chrono::nanoseconds, int> runChildProcess(int argc, const char * const * argv) noexcept {
 	// NOTE: I thought this was impossible, but apparently it isn't, so we have to check for it and report an error if it occurs.
 	// NOTE: The reason we don't just let CreateProcessA detect this error is because it will probably just filter out the nothingness and use the first argument as the program name, which is very terrible.
 	// NOTE: We don't care about the other arguments being zero because those get passed onto the child process anyway. It'll be the one to deal with any discrepencies in that regard.
@@ -190,19 +234,22 @@ std::pair<std::chrono::nanoseconds, int> runChildProcess(int argc, const char* c
 	// Fill a buffer with the required command-line to invoke the target program with all the specified arguments.
 	std::string buffer;
 	buffer += '\"';	// IMPORTANT NOTE: These are super necessary because you wouldn't otherwise be able to run programs that have names with spaces in them. Even worse, you could accidentally run a completely different program than the one you wanted, which is terrible behaviour. That is why we add the quotes, to prevent against those two things.
-	buffer += escape_quotation_marks(argv[0]);			// TODO: Research the escape characters used by CreateProcessA and think about how you can best avoid injection by the user and such.
-	// TODO: Think about using the C:\\Program trick as an attack vector.
+	prevent_injection(buffer, argv[0]);
+	// NOTE: prevent_injection() is super important because if the user get's quotation mark characters into the program name,
+	// it could cause the parser to parse the program name completely differently, which is pretty dangerous.
+	// To prevent that, prevent_injection escapes all the quotation marks properly according to Window's weird escape
+	// syntax.
 	buffer += "\" ";
 	if (flags::expandArgs) {					// NOTE: The difference in behavior here is achieved by adding quotes around the arguments. When quotes are present, arguments with spaces are still considered as one argument. Without quotes, the given arguments will be split up into many arguments when CreateProcessA creates the child process.
 		for (int i = 1; i < argc; i++) {
-			buffer += argv[i];
+			buffer += argv[i];			// NOTE: We don't prevent injection here because it's actually quite useful in this case.
 			buffer += ' ';
 		}
 	}
 	else {
 		for (int i = 1; i < argc; i++) {
 			buffer += '\"';
-			buffer += argv[i];
+			prevent_injection(buffer, argv[i]);		// NOTE: We prevent injection here because we want this to be one single argument no matter what.
 			buffer += "\" ";
 		}
 	}
@@ -246,8 +293,6 @@ std::pair<std::chrono::nanoseconds, int> runChildProcess(int argc, const char* c
 		reportError("failed to get child process exit code");
 		CloseHandle(procInfo.hProcess);
 		std::exit(EXIT_FAILURE);
-			// TODO: Make timeit errors look different to avoid confusion.
-			// Like do timeit: ERROR: or something.
 	}
 
 	if (!CloseHandle(procInfo.hProcess)) {
@@ -264,7 +309,7 @@ std::pair<std::chrono::nanoseconds, int> runChildProcess(int argc, const char* c
 
 // NOTE: type (&name)[size] is the syntax for an array reference, which is super useful in some cases. Why? Because it enforces the size of the array at compile-time. So you can't pass anything into the function except an array of the correct size.
 // NOTE: Compiler has no way of checking this properly if you use pointers, which means those aren't allowed either, which is also useful in some cases.
-void intToString(char (&output)[ELAPSED_TIME_STRING_SIZE], uint64_t value) {
+void intToString(char (&output)[ELAPSED_TIME_STRING_SIZE], uint64_t value) noexcept {
 	// TODO: You should make your own algorithm for doing this. These can get sort of complicated if you tune them to your hardware, but it's a good excersize, you should do it.
 	if (_ui64toa_s(value, output, ELAPSED_TIME_STRING_SIZE, 10) != 0) {					// NOTE: An unsigned int64 can be 20 digits long at maximum, which is why we technically only have to write to the first 21 bytes of the output array (cuz NUL character).
 		reportError("failed to convert elapsed time integer to string");				// NOTE: The output array is larger because it needs to work with doubleToString as well. We use ELAPSED_TIME_STRING here even though we don't need the full size just in case,
@@ -272,14 +317,14 @@ void intToString(char (&output)[ELAPSED_TIME_STRING_SIZE], uint64_t value) {
 	}
 }
 
-void doubleToString(char (&output)[ELAPSED_TIME_STRING_SIZE], double value) {
+void doubleToString(char (&output)[ELAPSED_TIME_STRING_SIZE], double value) noexcept {
 	if (sprintf_s(output, ELAPSED_TIME_STRING_SIZE, "%f", value) == -1) {				// NOTE: The buffer should be large enough for this never to overflow. Even if it isn't, sprintf_s will return -1 before it causes any sort of overflow, since it's a safe function.
 		reportError("failed to convert elapsed time double to string");
 		std::exit(EXIT_FAILURE);
 	}
 }
 
-DWORD manageArgs(int argc, const char* const * argv) {
+DWORD manageArgs(int argc, const char* const * argv) noexcept {
 	unsigned int targetProgramIndex = parseFlags(argc, argv);														// Parse flags before doing anything else.
 	unsigned int targetProgramArgCount = argc - targetProgramIndex;
 	switch (targetProgramArgCount) {
@@ -313,7 +358,7 @@ DWORD manageArgs(int argc, const char* const * argv) {
 			doubleToString(elapsedTimeString, std::chrono::duration_cast<std::chrono::duration<double, std::ratio<3600, 1>>>(elapsedTime).count()); break;
 		}
 
-		size_t elapsedTimeStringLength = strlen(elapsedTimeString);
+		const size_t elapsedTimeStringLength = strlen(elapsedTimeString);
 		elapsedTimeString[elapsedTimeStringLength] = '\n';															// Replace NUL termination character with newline. We don't need the NUL character anyway, so it's totally fine.
 		if (_write(STDERR_FILENO, elapsedTimeString, elapsedTimeStringLength + 1) == -1) {
 			reportError("failed to write elapsed time to stderr");
@@ -327,6 +372,9 @@ DWORD manageArgs(int argc, const char* const * argv) {
 int main(int argc, char* const * argv) {
 	signal(SIGINT, signalHandler);																							// These two lines make it so that the program ignores both SIGINT and SIGBREAK signals as best as possible. SIGBREAK can only be ignored for 5 seconds, but that's actually good.
 	signal(SIGBREAK, signalHandler);
+	// NOTE: noexcept function pointers implicitly cast to non-noexcept function pointers, which is super nice.
+	// The only reason this doesn't work in std::thread is because it's got templates and stuff which hinder this casting.
+	// SOLUTION: It's possible to make std::thread better I think, the stdlib just needs to be improved. TODO: Do that.
 
 	if (_isatty(STDERR_FILENO)) {																							// If stderr is connected to a tty, we need to enable ANSI escape codes so that we can output error messages in color. We also set a pair of flags so the rest of the program knows about the tty-status.
 		HANDLE stdErrHandle = GetStdHandle(STD_ERROR_HANDLE);
