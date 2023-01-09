@@ -54,7 +54,13 @@ const char helpText[] = "timeit runs the specified program with the specified ar
 							"NOTE: It is possible to specify a flag more than once. If this is the case, only the last occurrence will influence program behaviour.\n" \
 							"\n" \
 							"NOTE: On successful execution of timeit, the exit code is the exit code of the timed program. On any error, the exit code is EXIT_FAILURE.\n" \
-							"      Unless of course you use \"--help\", in which case the exit code is EXIT_SUCCESS.\n";
+							"      Unless of course you use \"--help\", in which case the exit code is EXIT_SUCCESS.\n" \
+							"\n" \
+							"NOTE: The text contained within the elements of [arguments]... is always taken literally. Quotation marks are passed\n" \
+							"      as characters to the target program and DO NOT cause any grouping of arguments. All other special characters are also taken literally.\n" \
+							"      Even with --expand-args specified, the arguments are only split on the spaces, the quotes are still taken as characters\n" \
+							"      and don't cause any grouping.\n";
+							// TODO: Make sure this note is nicely written.
 
 // Flag to keep track of whether we should color errors or not.
 bool isErrorColored;
@@ -250,7 +256,13 @@ std::pair<std::chrono::nanoseconds, int> runChildProcess(int argc, const char * 
 	// considered as one argument. Without quotes, the given arguments will be split up into many arguments when CreateProcessA creates the child process.
 	if (flags::expandArgs) {
 		for (int i = 1; i < argc; i++) {
-			buffer += argv[i];			// NOTE: We don't prevent injection here because it's actually quite useful in this case.
+			prevent_injection(buffer, argv[i]);
+			// NOTE: You would think that allowing injection here would prove to be useful, and you would be right, BUT there is the following problem:
+			// The syntax Windows uses for escapes is terrible and I don't want my program's users to have to deal with that.
+			// SOLUTION: Prevent Windows escaping but allow our own custom escaping.
+			// PROBLEM WITH THAT SOLUTION: That's not standard, so it's something extra that the users are going to have to remember.
+			// BETTER SOLUTION: Use whatever system Linux uses, that would be acceptable.
+			// TODO: Do the above solution, until then, we're just going to disallow injection here.
 			buffer += ' ';
 		}
 	}
