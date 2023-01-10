@@ -60,7 +60,6 @@ const char helpText[] = "timeit runs the specified program with the specified ar
 							"      as characters to the target program and DO NOT cause any grouping of arguments. All other special characters are also taken literally.\n" \
 							"      Even with --expand-args specified, the arguments are only split on the spaces, the quotes are still taken as characters\n" \
 							"      and don't cause any grouping.\n";
-							// TODO: Make sure this note is nicely written.
 
 // Flag to keep track of whether we should color errors or not.
 bool isErrorColored;
